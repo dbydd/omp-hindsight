@@ -1,0 +1,46 @@
+# Hindsight 测试实例（非生产）
+#
+# 用途：hindsight-omp 的读写验收。现役 8888 是日常在用的实例，
+# 所有写入测试落在这套上，两边不共享卷、端口、容器名。
+#
+# 参数沿用 _retired-container-dir/docker（第一轮迁移实测过的那套），
+# 唯一的结构差异是镜像：官方 ghcr.io/vectorize-io/hindsight:1.1.0，
+# 不自构建、不打补丁。1.1.0 已内置 NvidiaCrossEncoder，旧 reranker 补丁不需要；
+# 仍缺 VectorChord（2048 维索引必需），由 entrypoint.sh 从挂载目录铺进 pg0。
+#
+# 启动：
+#   cp .env.example .env   # 填密钥，并确认 VCHORD_SRC 指向 vchord 文件
+#   docker compose up -d
+#   curl -s localhost:18888/health/ready
+
+services:
+  hindsight-test:
+    image: ghcr.io/vectorize-io/hindsight:1.1.0
+    container_name: hindsight-test
+    entrypoint: ["/opt/entrypoint.sh"]
+    env_file:
+      - .env
+    environment:
+      HINDSIGHT_API_LLM_BASE_URL: http://host.docker.internal:3425/v1
+      HINDSIGHT_API_REFLECT_LLM_BASE_URL: http://host.docker.internal:3425/v1
+    ports:
+      - "18888:8888"
+      - "19999:9999"
+    volumes:
+      - ./data:/home/hindsight/.pg0
+      - ./entrypoint.sh:/opt/entrypoint.sh:ro
+      - ${VCHORD_SRC:-../../tobuild-vchord}:/opt/vchord-seed:ro
+    restart: "no"
+    stop_grace_period: 30s
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8888/version', timeout=5)",
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 60s

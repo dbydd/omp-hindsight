@@ -1,3 +1,7 @@
 node_modules/
 *.log
 .DS_Store
+
+# 测试实例：填好的密钥与 pg0 数据都不进仓库
+docker/.env
+docker/data/
