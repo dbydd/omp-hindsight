@@ -35,22 +35,22 @@
 
 | 问题 | 选项来源 | 提问条件 |
 | --- | --- | --- |
-| `j0` | `single`<br>`composite` | 总是提问 |
-| `j1` | `sequential`<br>`parallel` | `j0` ∈ {composite} |
-| `j2` | `read`<br>`write`<br>`noop` | 总是提问 |
-| `r0` | `content`<br>`operation` | `j2` ∈ {read} |
-| `r1` | `raw_memory`<br>`curated_knowledge` | `r0` ∈ {content} |
-| `r2` | `recall`<br>`reflect` | `r1` ∈ {raw_memory} |
-| `r3` | `page`<br>`mental_model` | `r1` ∈ {curated_knowledge} |
-| `r4` | `tree`<br>`search`<br>`get` | `r3` ∈ {page} |
-| `r5` | `operations`<br>`queue`<br>`plugin`<br>`bank_stats` | `r0` ∈ {operation} |
-| `w0` | `memory`<br>`knowledge_page`<br>`mental_model`<br>`operation` | `j2` ∈ {write} |
-| `w1` | `inline`<br>`reference`<br>`session` | `w0` ∈ {memory} |
-| `w3` | `page_mutation`<br>`folder_mutation` | `w0` ∈ {knowledge_page} |
-| `w4` | `create`<br>`update`<br>`delete` | `w3` ∈ {page_mutation} |
-| `w5` | `create`<br>`refresh`<br>`delete` | `w0` ∈ {mental_model} |
-| `w6` | `cancel`<br>`retry` | `w0` ∈ {operation} |
-| `s0` | 配置的 bank 列表 | `j2` ∈ {read, write} |
+| `intent_cardinality` | `single`<br>`composite` | 总是提问 |
+| `intent_dependency` | `sequential`<br>`parallel` | `intent_cardinality` ∈ {composite} |
+| `intent_effect` | `read`<br>`write`<br>`noop` | 总是提问 |
+| `read_subject` | `content`<br>`operation` | `intent_effect` ∈ {read} |
+| `knowledge_shape` | `raw_memory`<br>`curated_knowledge` | `read_subject` ∈ {content} |
+| `retrieval_depth` | `recall`<br>`reflect` | `knowledge_shape` ∈ {raw_memory} |
+| `curated_form` | `page`<br>`mental_model` | `knowledge_shape` ∈ {curated_knowledge} |
+| `page_read_mode` | `tree`<br>`search`<br>`get` | `curated_form` ∈ {page} |
+| `runtime_view` | `operations`<br>`queue`<br>`plugin`<br>`bank_stats` | `read_subject` ∈ {operation} |
+| `write_family` | `memory`<br>`knowledge_page`<br>`mental_model`<br>`operation` | `intent_effect` ∈ {write} |
+| `memory_source` | `inline`<br>`reference`<br>`session` | `write_family` ∈ {memory} |
+| `page_write_shape` | `page_mutation`<br>`folder_mutation` | `write_family` ∈ {knowledge_page} |
+| `page_mutation_kind` | `create`<br>`update`<br>`delete` | `page_write_shape` ∈ {page_mutation} |
+| `mental_model_write` | `create`<br>`refresh`<br>`delete` | `write_family` ∈ {mental_model} |
+| `background_task_write` | `cancel`<br>`retry` | `write_family` ∈ {operation} |
+| `target_bank` | 配置的 bank 列表 | `intent_effect` ∈ {read, write} |
 
 ## 失败模式
 

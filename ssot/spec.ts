@@ -259,42 +259,63 @@ export interface JudgeQuestionSpec {
 }
 
 /**
- * 题树照 docs/02-judge-system/02-choice-nodes.md 的 J/R/W/S 系列写，每题 2–4 个选项。
- * 顶层不再把 11 个操作名摊成一道题：先 J0/J2 分复合性与读写，再沿 R 或 W 分支细分到叶动作。
+ * 判定的题树，每题 2–4 个选项，边由每项的 `when`（上一问必须取到哪些答案）表达。
+ * 结构对应 docs/02-judge-system/02-choice-nodes.md 的 J/R/W/S 四个系列，但代码里的名字
+ * 一律用描述性的全称：系列编号（J0/R2/W4）只是文档里讲结构时的简称，不进入实现。
  *
- * 文档里 R5（运维查询）与 W6（任务干预）只有名字没有候选，这里补齐：
- *   R5 = operations / queue / plugin / bank_stats —— 插件与本实例的运维视图。
- *   W6 = cancel / retry —— 只干预后台任务，不新建内容。
+ * 文档里「运维查询」与「任务干预」两个节点只有名字没有候选，这里补齐为
+ * runtime_view（operations / queue / plugin / bank_stats）与
+ * background_task_write（cancel / retry）。
  * 文档未覆盖的「按路径读单个实体」（document / attachment / entity / bank 详情）不进题库：
  * 只要 intent 或 meta.target 给了 hindsight:// 路径，ops 直接按 PATH_ROUTES 反解成动作，
  * 不给浏览行为发明选择题。
  */
 const JUDGE_QUESTIONS_LITERAL = [
-  // J 系列：结构拆分与副作用分类
-  { id: "j0", optionsFrom: ["single", "composite"] },
-  { id: "j1", optionsFrom: ["sequential", "parallel"], when: { question: "j0", in: ["composite"] } },
-  { id: "j2", optionsFrom: ["read", "write", "noop"] },
+  // ── 第一层：这句话要拆成几个动作，以及每个动作是读、写还是不涉及记忆 ──
+  // intent_cardinality：一句话里是一个动作，还是好几个用「先…然后…」串起来的动作。
+  // composite 目前直接返回 unresolved 要求调用方拆开，不做多动作 DAG。
+  { id: "intent_cardinality", optionsFrom: ["single", "composite"] },
+  // intent_dependency：拆出来的多个动作之间是否要拿前一步的结果。只进判定记录，
+  // 不参与动作映射（多动作本身尚未执行）。
+  { id: "intent_dependency", optionsFrom: ["sequential", "parallel"], when: { question: "intent_cardinality", in: ["composite"] } },
+  // intent_effect：这个动作改不改系统状态。noop 是「这句话根本不需要动记忆库」，
+  // 比如打招呼、闲聊、问天气——它让工具能明确回答「无需操作」而不是硬塞一个动作。
+  { id: "intent_effect", optionsFrom: ["read", "write", "noop"] },
 
-  // R 系列：只读细分
-  { id: "r0", optionsFrom: ["content", "operation"], when: { question: "j2", in: ["read"] } },
-  { id: "r1", optionsFrom: ["raw_memory", "curated_knowledge"], when: { question: "r0", in: ["content"] } },
-  { id: "r2", optionsFrom: ["recall", "reflect"], when: { question: "r1", in: ["raw_memory"] } },
-  { id: "r3", optionsFrom: ["page", "mental_model"], when: { question: "r1", in: ["curated_knowledge"] } },
-  { id: "r4", optionsFrom: ["tree", "search", "get"], when: { question: "r3", in: ["page"] } },
-  { id: "r5", optionsFrom: ["operations", "queue", "plugin", "bank_stats"], when: { question: "r0", in: ["operation"] } },
+  // ── 只读分支：到底要看什么 ──
+  // read_subject：查的是库里的知识内容，还是插件与本实例的运行状态。
+  { id: "read_subject", optionsFrom: ["content", "operation"], when: { question: "intent_effect", in: ["read"] } },
+  // knowledge_shape：要的是散落的原始记忆，还是已经归纳成体系的知识（页面／心智模型）。
+  { id: "knowledge_shape", optionsFrom: ["raw_memory", "curated_knowledge"], when: { question: "read_subject", in: ["content"] } },
+  // retrieval_depth：快速召回原始事实（recall），还是要跨文档综合推理（reflect）。
+  { id: "retrieval_depth", optionsFrom: ["recall", "reflect"], when: { question: "knowledge_shape", in: ["raw_memory"] } },
+  // curated_form：读的是可编辑的知识页，还是后台维护的心智模型。
+  { id: "curated_form", optionsFrom: ["page", "mental_model"], when: { question: "knowledge_shape", in: ["curated_knowledge"] } },
+  // page_read_mode：看知识页的目录树、按关键词搜索，还是按 id/标题读整页。
+  { id: "page_read_mode", optionsFrom: ["tree", "search", "get"], when: { question: "curated_form", in: ["page"] } },
+  // runtime_view：运维类只读——异步任务列表、本地队列积压、插件配置、库统计。
+  { id: "runtime_view", optionsFrom: ["operations", "queue", "plugin", "bank_stats"], when: { question: "read_subject", in: ["operation"] } },
 
-  // W 系列：写入细分
-  { id: "w0", optionsFrom: ["memory", "knowledge_page", "mental_model", "operation"], when: { question: "j2", in: ["write"] } },
-  { id: "w1", optionsFrom: ["inline", "reference", "session"], when: { question: "w0", in: ["memory"] } },
-  { id: "w3", optionsFrom: ["page_mutation", "folder_mutation"], when: { question: "w0", in: ["knowledge_page"] } },
-  { id: "w4", optionsFrom: ["create", "update", "delete"], when: { question: "w3", in: ["page_mutation"] } },
-  { id: "w5", optionsFrom: ["create", "refresh", "delete"], when: { question: "w0", in: ["mental_model"] } },
-  { id: "w6", optionsFrom: ["cancel", "retry"], when: { question: "w0", in: ["operation"] } },
+  // ── 写入分支：写什么、怎么写 ──
+  // write_family：写的是会话记忆、知识页、心智模型，还是干预后台任务。
+  { id: "write_family", optionsFrom: ["memory", "knowledge_page", "mental_model", "operation"], when: { question: "intent_effect", in: ["write"] } },
+  // memory_source：要存的文字直接写在意图里、来自外部文件/上一步结果，还是整段会话。
+  { id: "memory_source", optionsFrom: ["inline", "reference", "session"], when: { question: "write_family", in: ["memory"] } },
+  // page_write_shape：动的是单篇页面的内容，还是分类文件夹本身。
+  { id: "page_write_shape", optionsFrom: ["page_mutation", "folder_mutation"], when: { question: "write_family", in: ["knowledge_page"] } },
+  // page_mutation_kind：新建、更新还是删除一篇知识页。
+  { id: "page_mutation_kind", optionsFrom: ["create", "update", "delete"], when: { question: "page_write_shape", in: ["page_mutation"] } },
+  // mental_model_write：新建、立即刷新还是删除一个心智模型。
+  { id: "mental_model_write", optionsFrom: ["create", "refresh", "delete"], when: { question: "write_family", in: ["mental_model"] } },
+  // background_task_write：取消排队中的后台任务，还是重试失败的那个。
+  { id: "background_task_write", optionsFrom: ["cancel", "retry"], when: { question: "write_family", in: ["operation"] } },
 
-  // S 系列：目标消歧。S0 的选项是配置里的 bank 短名；候选不足两个时 judge 侧直接跳过
-  // （单元素选择题无意义）。S1 的候选来自底层查询结果，是运行时数据而不是固定枚举，
-  // 因此不进这张静态表，由 judge 在拿到 2–3 个候选时临时构造。
-  { id: "s0", optionsFrom: "CONFIG_BANKS", when: { question: "j2", in: ["read", "write"] } },
+  // ── 目标消歧 ──
+  // target_bank：这条指令作用在当前配置的哪个库上。选项是配置里的 bank 短名；
+  // 候选不足两个时 judge 侧直接跳过（只有一个候选的选择题没有信息量）。
+  // 实体 id 级别的消歧（同名页面／任务）需要底层先查出 2–3 个候选，那是运行时数据，
+  // 不进这张静态表，由 judge 在拿到候选时临时构造问题。
+  { id: "target_bank", optionsFrom: "CONFIG_BANKS", when: { question: "intent_effect", in: ["read", "write"] } },
 ] as const satisfies readonly JudgeQuestionSpec[];
 
 export type JudgeQuestionId = (typeof JUDGE_QUESTIONS_LITERAL)[number]["id"];
