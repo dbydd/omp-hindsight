@@ -1722,80 +1722,115 @@
         {
           "intent": "把一条测试记忆写进 test-vault bank：这是 testrole 的第一次入库尝试",
           "expectedAction": "retain",
-          "expectedBank": "agent-testrole"
+          "expectedBank": "agent-testrole",
+          "config": "$CONFIG:testrole",
+          "env": "$ENV:testrole"
         },
         {
           "intent": "向 Alexandria v2 知识库 vault 写入一条论文精读结论：这是 vault bank 的判断卡内容",
           "expectedAction": "retain",
-          "expectedBank": "vault"
+          "expectedBank": "vault",
+          "config": "$CONFIG:testrole",
+          "env": "$ENV:testrole"
         },
         {
           "intent": "把一条论文精读结论写进 vault bank",
           "expectedAction": "retain",
-          "expectedBank": "vault"
+          "expectedBank": "vault",
+          "config": "$CONFIG:testrole",
+          "env": "$ENV:testrole"
         },
         {
           "intent": "把一条记忆写进 vault bank",
           "expectedAction": "retain",
-          "expectedBank": "vault"
+          "expectedBank": "vault",
+          "config": "$CONFIG:testrole",
+          "env": "$ENV:testrole"
         },
         {
           "intent": "记一下 SDANet 这篇论文的要点，别弄丢了",
           "expectedAction": "retain",
-          "expectedBank": "vault"
+          "expectedBank": "vault",
+          "config": "$CONFIG:testrole",
+          "env": "$ENV:testrole"
         },
         {
           "intent": "创建一个名为「工具面心得」的心智模型，用来沉淀 omp-hindsight 插件的使用经验",
           "expectedAction": "mental_model.create",
-          "expectedBank": "agent-testrole"
+          "expectedBank": "agent-testrole",
+          "config": "$CONFIG:testrole",
+          "env": "$ENV:testrole"
         },
         {
           "intent": "创建心智模型：工具面心得",
           "target": "hindsight://agent-testrole/mental-models/工具面心得",
           "expectedAction": "mental_model.create",
-          "expectedBank": "agent-testrole"
+          "expectedBank": "agent-testrole",
+          "config": "$CONFIG:testrole",
+          "env": "$ENV:testrole"
         },
         {
           "intent": "为 testrole 建立一个叫「工具面心得」的心智模型",
           "expectedAction": "mental_model.create",
-          "expectedBank": "agent-testrole"
+          "expectedBank": "agent-testrole",
+          "config": "$CONFIG:testrole",
+          "env": "$ENV:testrole"
         },
         {
           "intent": "心智模型「工具面心得」：记录 omp-hindsight 的使用经验",
           "expectedAction": "mental_model.create",
-          "expectedBank": "agent-testrole"
+          "expectedBank": "agent-testrole",
+          "config": "$CONFIG:testrole",
+          "env": "$ENV:testrole"
         },
         {
           "intent": "在 agent-testrole 知识库创建一页，页名：探索日志",
           "expectedAction": "knowledge_base.page_create",
-          "expectedBank": "agent-testrole"
+          "expectedBank": "agent-testrole",
+          "config": "$CONFIG:testrole",
+          "env": "$ENV:testrole"
         },
         {
           "intent": "用 mental_model.create 在 agent-testrole 建一个新心智模型，名称是「工具面心得」",
           "expectedAction": "mental_model.create",
-          "expectedBank": "agent-testrole"
+          "expectedBank": "agent-testrole",
+          "config": "$CONFIG:testrole",
+          "env": "$ENV:testrole"
         },
         {
           "intent": "从 agent-testrole bank 召回 testrole 的探索记录和第一次入库尝试",
           "expectedAction": "recall",
-          "expectedBank": "agent-testrole"
+          "expectedBank": "agent-testrole",
+          "config": "$CONFIG:testrole",
+          "env": "$ENV:testrole"
         },
         {
           "intent": "从 vault bank 召回关于 pnp-corrector 的记忆",
           "expectedAction": "recall",
-          "expectedBank": "vault"
+          "expectedBank": "vault",
+          "config": "$CONFIG:testrole",
+          "env": "$ENV:testrole"
         },
         {
           "intent": "综合回答：testrole 对 omp-hindsight 插件的探索到目前为止发现了什么",
           "expectedAction": "reflect",
-          "expectedBank": "agent-testrole"
+          "expectedBank": "agent-testrole",
+          "config": "$CONFIG:testrole",
+          "env": "$ENV:testrole"
         },
         {
           "intent": "翻一遍我存进 vault bank 的所有记忆，综合出 SDANet 和 pnp-corrector 两篇论文各自的要点",
           "expectedAction": "reflect",
-          "expectedBank": "vault"
+          "expectedBank": "vault",
+          "config": "$CONFIG:testrole",
+          "env": "$ENV:testrole"
         }
       ]
     }
-  ]
+  ],
+  "config_profiles": {
+    "read_only": "$CONFIG:read_only",
+    "readonly_env": "$ENV:readonly",
+    "testrole": "$CONFIG:testrole + $ENV:testrole"
+  }
 }
