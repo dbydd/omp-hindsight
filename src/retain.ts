@@ -208,7 +208,8 @@ export async function flushPending(
         banks.push({ bank: bank.id, status: "skipped", detail: "observationScopes 含无法展开的占位符" });
         continue;
       }
-      const operationId = `omp-flush-${sessionId}-${Date.now()}`;
+      // Hindsight 校验 operation_id 必须是合法 UUID；每次 flush 是一次独立操作，发新 UUID。
+      const operationId = crypto.randomUUID();
       await client.bankRequest<unknown>(bankId, "POST", "/memories", {
         body: {
           items: [

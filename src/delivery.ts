@@ -119,7 +119,9 @@ function bodyOf(entry: ToolQueueEntry): Record<string, unknown> {
       },
     ],
     async: true,
-    operation_id: `omp-tool-${entry.id}`,
+    // Hindsight 只接受合法 UUID 作为 operation_id（大写前缀会被 422 拒）；条目 id 本身
+    // 就是 UUID，直接用它——同一条目重投因此天然幂等。
+    operation_id: entry.id,
   };
 }
 
