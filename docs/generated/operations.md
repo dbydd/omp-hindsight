@@ -12,8 +12,8 @@
 | `retain` | 写 | bank | `hindsight://{bank}/documents/{id}`<br>`hindsight://{bank}/operations/{id}` | `op.retain` | `/retain` |
 | `document` | 读 | bank | `hindsight://{bank}/documents/{id}` | `op.document` | `/document` |
 | `entities` | 读 | bank | `hindsight://{bank}/entities?q=` | `op.entities` | `/entities` |
-| `kb` | 写 | bank | `hindsight://{bank}/kb/pages/{id}` | `op.kb` | `/kb` |
-| `mm` | 写 | bank | `hindsight://{bank}/mental-models/{id}` | `op.mm` | `/mm` |
+| `knowledge_base` | 写 | bank | `hindsight://{bank}/knowledge-base/pages/{id}` | `op.knowledge_base` | `/knowledge-base` |
+| `mental_model` | 写 | bank | `hindsight://{bank}/mental-models/{id}` | `op.mental_model` | `/mental-models` |
 | `bank` | 写 | bank | `hindsight://{bank}/stats` | `op.bank` | `/status` |
 | `attachment` | 读 | bank | `hindsight://{bank}/attachments/{id}` | `op.attachment` | `/attachment` |
 | `nothing` | 读 | none | — | `op.nothing` | — |

@@ -1,0 +1,354 @@
+/**
+ * 虚拟资源的 Markdown 渲染。
+ *
+ * 一个渲染函数对应 `PATH_ROUTES` 里的一条路由：叶给正文与门牌，目录给列表。
+ * 路径一律经 `buildPath` 生成，不在渲染里手拼 `hindsight://`；附件占位符
+ * `⟦hs-att:<id>⟧` 在这里展开成可读的图片引用。
+ */
+
+import type {
+  DocumentResponse,
+  KnowledgePageResponse,
+  MentalModelResponse,
+} from "@vectorize-io/hindsight-client";
+import { buildPath, type LocalFileResolution } from "./paths.ts";
+import type { QueuedRetry, QueueSnapshot } from "./queue.ts";
+import type { ChunkView, MemoryDetail, OperationStatus } from "./types.ts";
+
+const ATTACHMENT_PLACEHOLDER = /⟦hs-att:([^⟧]+)⟧/g;
+
+/** 文档正文里的附件占位符 → 图片引用。占位符原位保留语义，不重排文本。 */
+export function renderAttachments(text: string, bank: string): string {
+  return text.replace(ATTACHMENT_PLACEHOLDER, (_match, attachmentId: string) =>
+    // 图片门牌固定为 `<id>.png`，附件端点按 id 段取原始字节。
+    `![${attachmentId}](${buildPath(":bank/attachments/:id", { bank, id: `${attachmentId}.png` })})`,
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// 文档与分块
+// ─────────────────────────────────────────────────────────────
+
+export interface DocumentRenderInput {
+  readonly bank: string;
+  readonly document: DocumentResponse;
+  /** pathMapping 命中时的物理位置；未命中为 null。 */
+  readonly localFile?: LocalFileResolution | null;
+}
+
+export function renderDocument(input: DocumentRenderInput): string {
+  const { bank, document, localFile } = input;
+  const lines: string[] = [`# ${document.id}`, ""];
+
+  if (localFile !== undefined && localFile !== null) {
+    lines.push(`> [Local File Anchor]: ${localFile.localPath} (Exists: ${localFile.exists})`, "");
+  }
+
+  lines.push(
+    `- Bank: \`${bank}\``,
+    `- Path: \`${buildPath(":bank/documents/:doc", { bank, doc: document.id })}\``,
+    `- Created: ${document.created_at}`,
+    `- Updated: ${document.updated_at}`,
+    `- Memory units: ${document.memory_unit_count}`,
+  );
+  if (document.tags !== undefined && document.tags.length > 0) {
+    lines.push(`- Tags: ${document.tags.join(", ")}`);
+  }
+
+  lines.push("", "---", "");
+  lines.push(
+    document.original_text === null
+      ? "_Original text was not stored for this document._"
+      : renderAttachments(document.original_text, bank),
+  );
+  lines.push("");
+  return lines.join("\n");
+}
+
+export interface ChunkRenderInput {
+  readonly bank: string;
+  readonly chunk: ChunkView;
+}
+
+export function renderChunk(input: ChunkRenderInput): string {
+  const { bank, chunk } = input;
+  return [
+    `# Chunk ${chunk.chunk_index} of ${chunk.document_id}`,
+    "",
+    `- Chunk: \`${chunk.chunk_id}\``,
+    `- Path: \`${buildPath(":bank/chunks/:id", { bank, id: chunk.chunk_id })}\``,
+    `- Document: \`${buildPath(":bank/documents/:doc", { bank, doc: chunk.document_id })}\``,
+    `- Created: ${chunk.created_at}`,
+    `- Truncated: ${chunk.truncated === true}`,
+    "",
+    "---",
+    "",
+    renderAttachments(chunk.chunk_text, bank),
+    "",
+  ].join("\n");
+}
+
+export interface ChunkListRenderInput {
+  readonly bank: string;
+  readonly documentId: string;
+  readonly chunks: readonly ChunkView[];
+  /** 服务端返回的总数，大于 chunks.length 时提示截断。 */
+  readonly total?: number;
+}
+
+export function renderChunkList(input: ChunkListRenderInput): string {
+  const { bank, documentId, chunks, total } = input;
+  const lines = [
+    `# Chunks of ${documentId}`,
+    "",
+    `- Document: \`${buildPath(":bank/documents/:doc", { bank, doc: documentId })}\``,
+    `- Listed: ${chunks.length}${total !== undefined ? ` of ${total}` : ""}`,
+    "",
+  ];
+  if (chunks.length === 0) {
+    lines.push("_No chunks._");
+  } else {
+    for (const chunk of chunks) {
+      const preview = chunk.chunk_text.replace(/\s+/g, " ").slice(0, 120);
+      lines.push(
+        `- \`${chunk.chunk_index}\` → \`${buildPath(":bank/documents/:doc/chunks/:n", {
+          bank,
+          doc: documentId,
+          n: String(chunk.chunk_index),
+        })}\` — ${preview}`,
+      );
+    }
+  }
+  lines.push("");
+  return lines.join("\n");
+}
+
+// ─────────────────────────────────────────────────────────────
+// 事实（Memory）：召回结果与知识页的共同证据
+// ─────────────────────────────────────────────────────────────
+
+export interface MemoryRenderInput {
+  readonly bank: string;
+  readonly memory: MemoryDetail;
+}
+
+export function renderMemory(input: MemoryRenderInput): string {
+  const { bank, memory } = input;
+  const lines = [
+    `# Fact ${memory.id}`,
+    "",
+    `- Bank: \`${bank}\``,
+    `- Path: \`${buildPath(":bank/facts/:id", { bank, id: memory.id })}\``,
+    `- Type: ${memory.type ?? "unknown"}`,
+    `- Date: ${memory.date ?? "—"}`,
+  ];
+  if (memory.context !== null && memory.context !== undefined && memory.context.trim().length > 0) {
+    lines.push(`- Context: ${memory.context}`);
+  }
+  if (memory.entities !== null && memory.entities !== undefined && memory.entities.length > 0) {
+    lines.push(`- Entities: ${memory.entities.join(", ")}`);
+  }
+  if (memory.tags !== null && memory.tags !== undefined && memory.tags.length > 0) {
+    lines.push(`- Tags: ${memory.tags.join(", ")}`);
+  }
+  if (memory.document_id !== null && memory.document_id !== undefined) {
+    lines.push(`- Document: \`${buildPath(":bank/documents/:doc", { bank, doc: memory.document_id })}\``);
+  }
+  if (memory.chunk_id !== null && memory.chunk_id !== undefined) {
+    lines.push(`- Chunk: \`${buildPath(":bank/chunks/:id", { bank, id: memory.chunk_id })}\``);
+  }
+  lines.push("", "---", "", memory.text ?? "", "");
+  return lines.join("\n");
+}
+
+// ─────────────────────────────────────────────────────────────
+// 知识页与心智模型：YAML frontmatter + 正文
+// ─────────────────────────────────────────────────────────────
+
+type FrontmatterValue = string | readonly string[] | boolean | null;
+
+function yamlFrontmatter(entries: ReadonlyArray<readonly [string, FrontmatterValue]>): string {
+  const lines = ["---"];
+  for (const [key, value] of entries) {
+    if (value === null) lines.push(`${key}: null`);
+    else if (typeof value === "boolean") lines.push(`${key}: ${value}`);
+    else if (typeof value === "string") lines.push(`${key}: ${JSON.stringify(value)}`);
+    else if (value.length === 0) lines.push(`${key}: []`);
+    // JSON 的字符串语法就是合法的 YAML 双引号标量，省掉自己写转义。
+    else lines.push(`${key}:`, ...value.map((item) => `  - ${JSON.stringify(item)}`));
+  }
+  lines.push("---");
+  return lines.join("\n");
+}
+
+export interface KnowledgePageRenderInput {
+  readonly page: KnowledgePageResponse;
+  /** 来自树节点的新鲜度标记；叶路由单独取页面时未知，按 false 渲染。 */
+  readonly isStale?: boolean | null;
+}
+
+export function renderKnowledgePage(input: KnowledgePageRenderInput): string {
+  const { page } = input;
+  const frontmatter = yamlFrontmatter([
+    ["id", page.id],
+    ["name", page.name],
+    ["source_query", page.description ?? null],
+    ["tags", page.tags ?? []],
+    ["updated_at", page.timestamp ?? null],
+    ["is_stale", input.isStale ?? false],
+  ]);
+  const body = knowledgePageBody(page);
+  return `${frontmatter}\n${body.trimEnd()}\n`;
+}
+
+/**
+ * 空正文有两种成因，不能都算成"首建未完成"：已有 `timestamp` 说明构建跑过，
+ * 空是因为作用域内没有可取材的事实（知识页默认触发 observation）。
+ */
+function knowledgePageBody(page: KnowledgePageResponse): string {
+  if (page.body !== null && page.body !== undefined && page.body.trim().length > 0) return page.body;
+  if (page.timestamp !== null && page.timestamp !== undefined) {
+    return `_This page has been indexed (at ${page.timestamp}), but contains no content because no matching facts (such as observations) were found in scope._`;
+  }
+  return "_This page has no content yet; initial build in progress._";
+}
+
+export interface MentalModelRenderInput {
+  readonly model: MentalModelResponse;
+}
+
+export function renderMentalModel(input: MentalModelRenderInput): string {
+  const { model } = input;
+  const frontmatter = yamlFrontmatter([
+    ["id", model.id],
+    ["name", model.name],
+    ["source_query", model.source_query ?? null],
+    ["tags", model.tags ?? []],
+    ["updated_at", model.last_refreshed_at ?? null],
+    ["is_stale", model.is_stale ?? false],
+  ]);
+  const body =
+    model.content !== null && model.content !== undefined && model.content.trim().length > 0
+      ? model.content
+      : "_This mental model has no content yet; no refresh has finished._";
+  return `${frontmatter}\n${body.trimEnd()}\n`;
+}
+
+// ─────────────────────────────────────────────────────────────
+// 运维视图：异步任务与本地队列
+// ─────────────────────────────────────────────────────────────
+
+export interface OperationRenderInput {
+  readonly bank: string;
+  readonly operation: OperationStatus;
+}
+
+export function renderOperation(input: OperationRenderInput): string {
+  const { bank, operation } = input;
+  const lines = [
+    `# Operation ${operation.operation_id}`,
+    "",
+    `- Bank: \`${bank}\``,
+    `- Path: \`${buildPath(":bank/operations/:id", { bank, id: operation.operation_id })}\``,
+    `- Type: ${operation.operation_type ?? "unknown"}`,
+    `- Status: ${operation.status}`,
+    `- Created: ${operation.created_at ?? "—"}`,
+    `- Updated: ${operation.updated_at ?? "—"}`,
+    `- Completed: ${operation.completed_at ?? "—"}`,
+    `- Retries: ${operation.retry_count ?? 0}`,
+  ];
+  if (operation.next_retry_at !== null && operation.next_retry_at !== undefined) {
+    lines.push(`- Next retry: ${operation.next_retry_at}`);
+  }
+  if (operation.error_message !== null && operation.error_message !== undefined) {
+    lines.push(`- Error: ${operation.error_message}`);
+  }
+  if (operation.mental_model_id !== null && operation.mental_model_id !== undefined) {
+    lines.push(
+      `- Mental model: \`${buildPath(":bank/mental-models/:id", { bank, id: operation.mental_model_id })}\``,
+    );
+  }
+
+  const progress = operation.progress;
+  if (progress !== null && progress !== undefined) {
+    lines.push("", "## Progress", "", `- Stage: ${progress.stage} (${progress.at})`);
+    if (progress.processed !== null && progress.processed !== undefined) {
+      lines.push(
+        progress.total !== null && progress.total !== undefined
+          ? `- Processed: ${progress.processed} / ${progress.total}`
+          : `- Processed: ${progress.processed}`,
+      );
+    }
+    if (progress.detail !== null && progress.detail !== undefined) {
+      for (const [name, count] of Object.entries(progress.detail)) lines.push(`- ${name}: ${count}`);
+    }
+  }
+
+  const children = operation.child_operations;
+  if (children !== null && children !== undefined && children.length > 0) {
+    lines.push("", "## Sub-operations", "");
+    for (const child of children) {
+      const items =
+        child.items_count === null || child.items_count === undefined ? "" : ` · ${child.items_count} items`;
+      const error = child.error_message === null || child.error_message === undefined ? "" : ` — ${child.error_message}`;
+      lines.push(
+        `- \`${buildPath(":bank/operations/:id", { bank, id: child.operation_id })}\` — ${child.status}${items}${error}`,
+      );
+    }
+  }
+  lines.push("");
+  return lines.join("\n");
+}
+
+export function renderQueue(snapshot: QueueSnapshot): string {
+  const lines = [
+    "# Retry Queue",
+    "",
+    `- Pending: ${snapshot.pending.length}`,
+    `- Failed: ${snapshot.failed.length}`,
+    `- Corrupt: ${snapshot.corrupt.length}`,
+  ];
+
+  for (const entry of snapshot.pending) lines.push(...queueEntryLines(entry));
+  if (snapshot.pending.length > 0) lines.push("");
+  if (snapshot.failed.length > 0) {
+    lines.push("## Failed", "");
+    for (const entry of snapshot.failed) lines.push(...queueEntryLines(entry));
+    lines.push("");
+  }
+  if (snapshot.corrupt.length > 0) {
+    lines.push("## Corrupt", "");
+    for (const name of snapshot.corrupt) lines.push(`- \`${name}\` — unreadable payload, parked in failed/`);
+    lines.push("");
+  }
+  lines.push("");
+  return lines.join("\n");
+}
+
+export function renderQueueEntry(entry: QueuedRetry): string {
+  const content = entry.item.content;
+  const preview = typeof content === "string" ? content : JSON.stringify(content);
+  const clipped = preview.replace(/\s+/g, " ").slice(0, 400);
+  return [
+    `# Queued Retry ${entry.id}`,
+    "",
+    `- Path: \`${buildPath("queue/:id", { id: entry.id })}\``,
+    `- State: ${entry.state}`,
+    `- Bank: \`${entry.bank}\``,
+    `- Attempts: ${entry.attempts}`,
+    `- Created: ${entry.createdAt}`,
+    `- Last error: ${entry.lastError ?? "—"}`,
+    `- Payload: ${typeof content === "string" ? "text" : "content blocks"}`,
+    "",
+    "---",
+    "",
+    `${clipped}${preview.length > clipped.length ? "…" : ""}`,
+    "",
+  ].join("\n");
+}
+
+function queueEntryLines(entry: QueuedRetry): string[] {
+  const path = buildPath("queue/:id", { id: entry.id });
+  const error = entry.lastError === undefined ? "" : ` — last error: ${entry.lastError}`;
+  return [`- \`${path}\` — bank \`${entry.bank}\`, ${entry.state}, ${entry.attempts} attempts${error}`];
+}

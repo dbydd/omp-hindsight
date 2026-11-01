@@ -1,5 +1,5 @@
 {
-  "name": "@dbydd/hindsight-omp",
+  "name": "@dbydd/omp-hindsight",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -23,15 +23,22 @@
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
+    "test:core": "bun test tests/core-foundation.test.ts",
+    "test:adapter": "bun test tests/adapter-layer.test.ts",
+    "test:container": "bun test tests/container-integration.test.ts",
+    "test:judge": "bun test tests/decision-paths.test.ts",
     "ssot:check": "bun ssot/check.ts",
     "ssot:gen": "bun ssot/gen.ts",
     "ssot:verify": "bun ssot/check.ts && bun ssot/gen.ts --check",
-    "verify": "tsc -p tsconfig.json && bun ssot/check.ts && bun ssot/gen.ts --check"
+    "verify": "tsc -p tsconfig.json && bun ssot/check.ts && bun ssot/gen.ts --check && bun run test:core && bun run test:adapter"
   },
   "devDependencies": {
     "@oh-my-pi/pi-agent-core": "^18.14.2",
     "@oh-my-pi/pi-coding-agent": "^18.14.2",
     "@types/bun": "^1.4.4",
     "@types/node": "^26.6.6"
+  },
+  "dependencies": {
+    "@vectorize-io/hindsight-client": "^1.1.0"
   }
 }

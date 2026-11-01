@@ -9,7 +9,7 @@
     "noEmit": true,
     "skipLibCheck": true,
     "noUncheckedIndexedAccess": true,
-    "types": ["node"]
+    "types": ["node", "bun"]
   },
-  "include": ["ssot/**/*.ts", "src/**/*.ts"]
+  "include": ["ssot/**/*.ts", "src/**/*.ts", "tests/**/*.ts"]
 }

@@ -4,7 +4,7 @@
 
 ## 1. 为什么需要它
 
-三份草稿（`DESIGN.md` 定位与资源面、`RUNTIME.md` 运行时行为、`ARCHITECTURE.md` 模块与数据流）描述同一套系统，必然出现"文档说 A、代码做 B、测试断言 C"的漂移。社区插件里这类漂移已经有可见的代价：epimetheus 的 comparison.md 逐条列出竞品"声称支持但实际不生效"的功能，omp 内建的 mental-model seed 曾因 tag 与 retain 实际打的 tag 不一致而长期刷出空内容。
+在系统演进过程中，如果多份文档独立描述同一套系统，必然出现"文档说 A、代码做 B、测试断言 C"的漂移。社区插件里这类漂移已经有可见的代价：epimetheus 的 comparison.md 逐条列出竞品"声称支持但实际不生效"的功能，omp 内建的 mental-model seed 曾因 tag 与 retain 实际打的 tag 不一致而长期刷出空内容。
 
 SSOT 的办法不是"文档不要重复"，而是**重复由机器生成**：取值只写一次，其余全部派生，并且可检查。
 

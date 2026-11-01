@@ -11,7 +11,41 @@
 export const SPEC_VERSION = "1.0.0";
 
 // ─────────────────────────────────────────────────────────────
-// 1. 操作目录
+// 1. 工具参数与操作目录
+// ─────────────────────────────────────────────────────────────
+
+export interface ToolParamSpec {
+  readonly type: "string" | "number" | "boolean";
+  readonly required: boolean;
+  readonly description: string;
+}
+
+/** 单工具严格钉死的 4 个输入参数，杜绝宽泛 meta 膨胀。 */
+export const TOOL_PARAMETERS: Readonly<Record<string, ToolParamSpec>> = {
+  intent: {
+    type: "string",
+    required: true,
+    description: "简短操作意图（供 System One 模型进行毫秒级判定）",
+  },
+  content: {
+    type: "string",
+    required: false,
+    description: "可选大段文本正文（与 intent 隔离，不传给判定模型，避免 Token 浪费与注意力污染）",
+  },
+  file: {
+    type: "string",
+    required: false,
+    description: "可选本地文件相对路径指针（插件直接读取物理文件，零 Token 损耗）",
+  },
+  target: {
+    type: "string",
+    required: false,
+    description: "可选显式目标虚拟路径（如 hindsight://vault/pages/xxx）或 Bank ID",
+  },
+} as const;
+
+// ─────────────────────────────────────────────────────────────
+// 1.1 操作目录
 //    模型能通过 `hindsight` 工具或资源树触达的每一种动作。
 //    judge 的选项集合、工具的参数校验、返回路径、审批级别都从这里生成。
 // ─────────────────────────────────────────────────────────────
@@ -23,8 +57,8 @@ export const OPERATION_IDS = [
   "retain",
   "document",
   "entities",
-  "kb",
-  "mm",
+  "knowledge_base",
+  "mental_model",
   "bank",
   "attachment",
   "nothing",
@@ -87,19 +121,19 @@ const OPERATIONS_LITERAL = {
     judgeKey: "op.entities",
     command: ["entities"],
   },
-  kb: {
+  knowledge_base: {
     write: true,
     target: "bank",
-    returns: ["hindsight://{bank}/kb/pages/{id}"],
-    judgeKey: "op.kb",
-    command: ["kb"],
+    returns: ["hindsight://{bank}/knowledge-base/pages/{id}"],
+    judgeKey: "op.knowledge_base",
+    command: ["knowledge-base"],
   },
-  mm: {
+  mental_model: {
     write: true,
     target: "bank",
     returns: ["hindsight://{bank}/mental-models/{id}"],
-    judgeKey: "op.mm",
-    command: ["mm"],
+    judgeKey: "op.mental_model",
+    command: ["mental-models"],
   },
   bank: {
     write: true,
@@ -153,14 +187,15 @@ const PATH_ROUTES_LITERAL = [
   { pattern: ":bank/documents/:doc",      backing: "leaf", immutable: true,  endpoint: "/banks/:bank/documents/:doc",    scope: "all" },
   { pattern: ":bank/documents/:doc/chunks", backing: "dir", immutable: true, endpoint: "/banks/:bank/documents/:doc/chunks", scope: "all" },
   { pattern: ":bank/documents/:doc/chunks/:n", backing: "leaf", immutable: true, endpoint: "/banks/:bank/documents/:doc/chunks", scope: "all" },
+  { pattern: ":bank/chunks/:id",          backing: "leaf", immutable: true,  endpoint: "/chunks/:id",                    scope: "all" },
   { pattern: ":bank/facts",               backing: "dir",  immutable: false, endpoint: "/banks/:bank/memories/list",     scope: "all" },
   { pattern: ":bank/facts/:id",           backing: "leaf", immutable: true,  endpoint: "/banks/:bank/memories/:id",      scope: "all" },
   { pattern: ":bank/observations",        backing: "dir",  immutable: false, endpoint: "/banks/:bank/memories/recall",   scope: "all" },
   { pattern: ":bank/observations/scopes", backing: "leaf", immutable: true,  endpoint: "/banks/:bank/observations/scopes", scope: "all" },
   { pattern: ":bank/entities",            backing: "dir",  immutable: false, endpoint: "/banks/:bank/entities",          scope: "all" },
   { pattern: ":bank/entities/graph",      backing: "leaf", immutable: true,  endpoint: "/banks/:bank/graph",             scope: "all" },
-  { pattern: ":bank/kb",                  backing: "dir",  immutable: false, endpoint: "/banks/:bank/knowledge-base/tree", scope: "all" },
-  { pattern: ":bank/kb/pages/:id",        backing: "leaf", immutable: false, endpoint: "/banks/:bank/knowledge-base/pages/:id", scope: "all" },
+  { pattern: ":bank/knowledge-base",      backing: "dir",  immutable: false, endpoint: "/banks/:bank/knowledge-base/tree", scope: "all" },
+  { pattern: ":bank/knowledge-base/pages/:id", backing: "leaf", immutable: false, endpoint: "/banks/:bank/knowledge-base/pages/:id", scope: "all" },
   { pattern: ":bank/mental-models",       backing: "dir",  immutable: false, endpoint: "/banks/:bank/mental-models",     scope: "all" },
   { pattern: ":bank/mental-models/:id",   backing: "leaf", immutable: false, endpoint: "/banks/:bank/mental-models/:id", scope: "all" },
   { pattern: ":bank/tags",                backing: "leaf", immutable: false, endpoint: "/banks/:bank/tags",              scope: "all" },
@@ -204,10 +239,14 @@ const CONFIG_KEYS_LITERAL = {
   // 连接
   baseUrl:                    { scope: "global", type: "string", required: true },
   apiKeyEnvVar:               { scope: "global", type: "string", default: "HINDSIGHT_API_KEY" },
+  // 客户端行为（对齐 pi-hindsight 的成熟参数设计）
+  timeoutMs:                  { scope: "global", type: "number", default: 30000, constraint: "毫秒，HTTP 单次请求上限" },
+  enabled:                    { scope: "global", type: "boolean", default: true, constraint: "false 时插件静止，不注册工具与路由" },
   // bank 列表
   banks:                      { scope: "global", type: "json", required: true },
   "banks[].id":               { scope: "bank", type: "string", required: true, constraint: "唯一短名，资源树与 judge 选项都用它" },
   "banks[].bankId":           { scope: "bank", type: "string", required: true, constraint: "支持 ${ROLE} 占位符" },
+  "banks[].description":      { scope: "bank", type: "string", constraint: "业务职责描述，供 judge 选库时作为证据" },
   "banks[].access":           { scope: "bank", type: "string", default: "read-write", constraint: "read | read-write" },
   "banks[].recall.enabled":   { scope: "bank", type: "boolean", default: true },
   "banks[].recall.maxTokens": { scope: "bank", type: "number", default: 1200 },
@@ -217,28 +256,34 @@ const CONFIG_KEYS_LITERAL = {
   "banks[].retain.mode":      { scope: "bank", type: "string", default: "manual", constraint: "manual | decision | auto | off" },
   "banks[].retain.scopes":    { scope: "bank", type: "json", required: true, constraint: "observationScopes，不允许留空" },
   "banks[].retain.constantTags": { scope: "bank", type: "string[]", default: ["harness:omp"] },
-  // 路径映射
-  "pathMapping[].stripPrefix": { scope: "pathMapping", type: "string", required: true },
-  "pathMapping[].root":        { scope: "pathMapping", type: "string", required: true },
   // 内容整形
   retainContent:              { scope: "global", type: "json" },
   toolFilter:                 { scope: "global", type: "json" },
   strip:                      { scope: "global", type: "json" },
   // recall 行为
+  recallBudget:               { scope: "global", type: "string", default: "mid", constraint: "low | mid | high" },
   recallContextTurns:         { scope: "global", type: "number", default: 2 },
   recallContextRoles:         { scope: "global", type: "string[]", default: ["user", "assistant", "tool"] },
   recallContextStrategy:      { scope: "global", type: "string", default: "adaptive", constraint: "adaptive | user_only" },
   recallDebounceTurns:        { scope: "global", type: "number", default: 3, constraint: "连续无焦点位移跳过刷库的轮数，0为不防抖" },
   recallMaxQueryChars:        { scope: "global", type: "number", default: 800 },
+  recallTopK:                 { scope: "global", type: "number", default: 8, constraint: "每轮最多召回条数" },
   recallTimeoutMs:            { scope: "global", type: "number", default: 10000 },
+  recallMode:                 { scope: "global", type: "string", default: "every-turn", constraint: "every-turn | every-n-turns | explicit-only" },
+  recallEveryNTurns:          { scope: "global", type: "number", default: 5, constraint: "recallMode=every-n-turns 时生效" },
+  recallMinIntervalMs:        { scope: "global", type: "number", default: 0, constraint: "两次 recall 的最小间隔毫秒" },
   injectTimeoutMs:            { scope: "global", type: "number", default: 7000 },
   autoRecallTypes:            { scope: "global", type: "string[]", default: ["observation"] },
+  recallPreferObservations:   { scope: "global", type: "boolean", default: true },
+  recallQueryPreamble:        { scope: "global", type: "string", default: "omp coding task memory lookup." },
+  recallAntiPatternGuard:     { scope: "global", type: "boolean", default: true, constraint: "true 时启用反向踩坑熔断通道" },
+  recallInjectPosition:       { scope: "global", type: "string", default: "append", constraint: "append | prepend" },
   pageRefreshEveryTurns:      { scope: "global", type: "number", default: 20 },
   persistDisplay:             { scope: "global", type: "boolean", default: false },
-  // flush
-  autoFlushSessionOn:         { scope: "global", type: "string[]", default: ["switch", "fork", "tree", "compact"] },
-  autoFlushPendingOn:         { scope: "global", type: "string[]", default: ["quit", "startup"] },
+  // 全量会话回写已废弃（INV-14：聊天流水账严禁入库）；flush 仅保留队列重试触发
+  retryQueueMaxAttempts:      { scope: "global", type: "number", default: 5, constraint: "离线重试上限，超限移入 failed" },
   // 运行
+  decomposerRole:             { scope: "global", type: "string", default: "smol", constraint: "用于入口长意图解构与切分的 omp 模型角色" },
   defaultRole:                { scope: "global", type: "string" },
   logLevel:                   { scope: "global", type: "string", default: "info", constraint: "debug | info | warn | error" },
 } as const satisfies Record<string, ConfigKeySpec>;
@@ -258,68 +303,212 @@ export interface JudgeQuestionSpec {
   readonly when?: { readonly question: string; readonly in: readonly string[] };
 }
 
-/**
- * 判定的题树，每题 2–4 个选项，边由每项的 `when`（上一问必须取到哪些答案）表达。
- * 结构对应 docs/02-judge-system/02-choice-nodes.md 的 J/R/W/S 四个系列，但代码里的名字
- * 一律用描述性的全称：系列编号（J0/R2/W4）只是文档里讲结构时的简称，不进入实现。
- *
- * 文档里「运维查询」与「任务干预」两个节点只有名字没有候选，这里补齐为
- * runtime_view（operations / queue / plugin / bank_stats）与
- * background_task_write（cancel / retry）。
- * 文档未覆盖的「按路径读单个实体」（document / attachment / entity / bank 详情）不进题库：
- * 只要 intent 或 meta.target 给了 hindsight:// 路径，ops 直接按 PATH_ROUTES 反解成动作，
- * 不给浏览行为发明选择题。
- */
 const JUDGE_QUESTIONS_LITERAL = [
-  // ── 第一层：这句话要拆成几个动作，以及每个动作是读、写还是不涉及记忆 ──
-  // intent_cardinality：一句话里是一个动作，还是好几个用「先…然后…」串起来的动作。
-  // composite 目前直接返回 unresolved 要求调用方拆开，不做多动作 DAG。
-  { id: "intent_cardinality", optionsFrom: ["single", "composite"] },
-  // intent_dependency：拆出来的多个动作之间是否要拿前一步的结果。只进判定记录，
-  // 不参与动作映射（多动作本身尚未执行）。
-  { id: "intent_dependency", optionsFrom: ["sequential", "parallel"], when: { question: "intent_cardinality", in: ["composite"] } },
-  // intent_effect：这个动作改不改系统状态。noop 是「这句话根本不需要动记忆库」，
-  // 比如打招呼、闲聊、问天气——它让工具能明确回答「无需操作」而不是硬塞一个动作。
-  { id: "intent_effect", optionsFrom: ["read", "write", "noop"] },
+  // ── 门禁层：意图复合度与解构判定（由本地 System One 毫秒级判决，零规则脆弱性）──
+  // intent_cardinality：判定输入是一句单一聚焦的原子命令，还是包含多步串联操作/内嵌了大段代码正文需要调用解构器。
+  {
+    id: "intent_cardinality",
+    optionsFrom: ["atomic", "composite"],
+  },
 
-  // ── 只读分支：到底要看什么 ──
-  // read_subject：查的是库里的知识内容，还是插件与本实例的运行状态。
-  { id: "read_subject", optionsFrom: ["content", "operation"], when: { question: "intent_effect", in: ["read"] } },
-  // knowledge_shape：要的是散落的原始记忆，还是已经归纳成体系的知识（页面／心智模型）。
-  { id: "knowledge_shape", optionsFrom: ["raw_memory", "curated_knowledge"], when: { question: "read_subject", in: ["content"] } },
-  // retrieval_depth：快速召回原始事实（recall），还是要跨文档综合推理（reflect）。
-  { id: "retrieval_depth", optionsFrom: ["recall", "reflect"], when: { question: "knowledge_shape", in: ["raw_memory"] } },
-  // curated_form：读的是可编辑的知识页，还是后台维护的心智模型。
-  { id: "curated_form", optionsFrom: ["page", "mental_model"], when: { question: "knowledge_shape", in: ["curated_knowledge"] } },
-  // page_read_mode：看知识页的目录树、按关键词搜索，还是按 id/标题读整页。
-  { id: "page_read_mode", optionsFrom: ["tree", "search", "get"], when: { question: "curated_form", in: ["page"] } },
-  // runtime_view：运维类只读——异步任务列表、本地队列积压、插件配置、库统计。
-  { id: "runtime_view", optionsFrom: ["operations", "queue", "plugin", "bank_stats"], when: { question: "read_subject", in: ["operation"] } },
+  // ── 第一级：意图大类与副作用（按业务领域同类聚类）──
+  // action_family：将意图归入明确的功能族系。由 omp 原生 judge（System One 模型）进行单步高质量分类。
+  {
+    id: "action_family",
+    optionsFrom: ["memory_query", "memory_retain", "knowledge_base", "mental_model", "operation_view", "none"],
+  },
 
-  // ── 写入分支：写什么、怎么写 ──
-  // write_family：写的是会话记忆、知识页、心智模型，还是干预后台任务。
-  { id: "write_family", optionsFrom: ["memory", "knowledge_page", "mental_model", "operation"], when: { question: "intent_effect", in: ["write"] } },
-  // memory_source：要存的文字直接写在意图里、来自外部文件/上一步结果，还是整段会话。
-  { id: "memory_source", optionsFrom: ["inline", "reference", "session"], when: { question: "write_family", in: ["memory"] } },
-  // page_write_shape：动的是单篇页面的内容，还是分类文件夹本身。
-  { id: "page_write_shape", optionsFrom: ["page_mutation", "folder_mutation"], when: { question: "write_family", in: ["knowledge_page"] } },
-  // page_mutation_kind：新建、更新还是删除一篇知识页。
-  { id: "page_mutation_kind", optionsFrom: ["create", "update", "delete"], when: { question: "page_write_shape", in: ["page_mutation"] } },
-  // mental_model_write：新建、立即刷新还是删除一个心智模型。
-  { id: "mental_model_write", optionsFrom: ["create", "refresh", "delete"], when: { question: "write_family", in: ["mental_model"] } },
-  // background_task_write：取消排队中的后台任务，还是重试失败的那个。
-  { id: "background_task_write", optionsFrom: ["cancel", "retry"], when: { question: "write_family", in: ["operation"] } },
+  // ── 第二级：同类动作特化（在锁定的族系内部做细化对比）──
+  // 记忆检索族细化：快速召回事实（recall）还是多文档综合推理（reflect）
+  {
+    id: "retrieval_depth",
+    optionsFrom: ["recall", "reflect"],
+    when: { question: "action_family", in: ["memory_query"] },
+  },
+  // 记忆保存来源：沉淀内容的来源形态（直接内联、外部引用或会话记录）
+  {
+    id: "retain_source",
+    optionsFrom: ["inline", "reference", "session"],
+    when: { question: "action_family", in: ["memory_retain"] },
+  },
+  // 知识库管理族细化：面向知识页与目录的增删改查
+  {
+    id: "knowledge_base_action",
+    optionsFrom: ["tree", "search", "get", "page_create", "page_update", "page_delete", "folder_create"],
+    when: { question: "action_family", in: ["knowledge_base"] },
+  },
+  // 心智模型维护族细化：高阶认知模型的生命周期管理
+  {
+    id: "mental_model_action",
+    optionsFrom: ["list", "get", "create", "refresh", "delete"],
+    when: { question: "action_family", in: ["mental_model"] },
+  },
+  // 运行与运维族细化：异步任务与队列状态管理
+  {
+    id: "operation_action",
+    optionsFrom: ["list", "get", "cancel"],
+    when: { question: "action_family", in: ["operation_view"] },
+  },
 
-  // ── 目标消歧 ──
-  // target_bank：这条指令作用在当前配置的哪个库上。选项是配置里的 bank 短名；
-  // 候选不足两个时 judge 侧直接跳过（只有一个候选的选择题没有信息量）。
-  // 实体 id 级别的消歧（同名页面／任务）需要底层先查出 2–3 个候选，那是运行时数据，
-  // 不进这张静态表，由 judge 在拿到候选时临时构造问题。
-  { id: "target_bank", optionsFrom: "CONFIG_BANKS", when: { question: "intent_effect", in: ["read", "write"] } },
+  // ── 第三级：目标消歧 ──
+  // target_bank：该操作作用于当前配置的哪个 Bank（选项来自启用的 bank 列表）
+  {
+    id: "target_bank",
+    optionsFrom: "CONFIG_BANKS",
+    when: { question: "action_family", in: ["memory_query", "memory_retain", "knowledge_base", "mental_model", "operation_view"] },
+  },
 ] as const satisfies readonly JudgeQuestionSpec[];
 
 export type JudgeQuestionId = (typeof JUDGE_QUESTIONS_LITERAL)[number]["id"];
 export const JUDGE_QUESTIONS: readonly JudgeQuestionSpec[] = JUDGE_QUESTIONS_LITERAL;
+
+// ─────────────────────────────────────────────────────────────
+// 4.1 上下文组合与隔离矩阵（Context Composition Matrix）
+//     对齐 omp-onlyne 规范：黄金三段式布局，明确注入字段与绝对禁止字段。
+// ─────────────────────────────────────────────────────────────
+
+export interface ContextProjectionSpec {
+  readonly questionId: string;
+  readonly stage: "gatekeeper" | "tier1" | "tier2" | "tier3" | "recall";
+  readonly focus: readonly string[];
+  readonly groundTruth: readonly string[];
+  readonly forbidden: readonly string[];
+}
+
+export const CONTEXT_PROJECTIONS: readonly ContextProjectionSpec[] = [
+  {
+    questionId: "intent_cardinality",
+    stage: "gatekeeper",
+    focus: ["intent", "has_file_or_content"],
+    groundTruth: [],
+    forbidden: ["full_history", "bank_contents", "detailed_schemas"],
+  },
+  {
+    questionId: "action_family",
+    stage: "tier1",
+    focus: ["command", "has_payload", "explicit_target"],
+    groundTruth: ["available_banks", "environment"],
+    forbidden: ["payload_text", "full_history", "detailed_schemas"],
+  },
+  {
+    questionId: "retrieval_depth",
+    stage: "tier2",
+    focus: ["command"],
+    groundTruth: ["confirmed_family:memory_query"],
+    forbidden: ["write_options", "bank_secrets", "payload_text"],
+  },
+  {
+    questionId: "retain_source",
+    stage: "tier2",
+    focus: ["command", "has_payload", "has_file"],
+    groundTruth: ["confirmed_family:memory_retain"],
+    forbidden: ["query_options", "payload_text"],
+  },
+  {
+    questionId: "knowledge_base_action",
+    stage: "tier2",
+    focus: ["command", "explicit_target"],
+    groundTruth: ["confirmed_family:knowledge_base"],
+    forbidden: ["memory_query_options", "full_history"],
+  },
+  {
+    questionId: "mental_model_action",
+    stage: "tier2",
+    focus: ["command"],
+    groundTruth: ["confirmed_family:mental_model"],
+    forbidden: ["knowledge_base_options", "memory_query_options"],
+  },
+  {
+    questionId: "operation_action",
+    stage: "tier2",
+    focus: ["command"],
+    groundTruth: ["confirmed_family:operation_view"],
+    forbidden: ["content_options", "payload_text"],
+  },
+  {
+    questionId: "target_bank",
+    stage: "tier3",
+    focus: ["command", "action"],
+    groundTruth: ["available_banks"],
+    forbidden: ["read_options", "payload_text"],
+  },
+  {
+    questionId: "candidate_rerank",
+    stage: "tier3",
+    focus: ["query"],
+    groundTruth: ["candidates:index,bank,summary"],
+    forbidden: ["full_document_text", "unretrieved_banks"],
+  },
+  {
+    questionId: "recall_relevance",
+    stage: "recall",
+    focus: ["execution_focus:error_fingerprint,plan_subgoal"],
+    groundTruth: ["candidate_convention:summary"],
+    forbidden: ["unrelated_tool_diffs", "full_chat_transcript"],
+  },
+] as const;
+
+// ─────────────────────────────────────────────────────────────
+// 4.2 标准化回执与启发式引导规范
+// ─────────────────────────────────────────────────────────────
+
+export interface ReceiptSpec {
+  readonly kind: string;
+  readonly summary: string;
+  readonly requiredFields: readonly string[];
+}
+
+export const RECEIPT_TEMPLATES: readonly ReceiptSpec[] = [
+  {
+    kind: "retain",
+    summary: "Asynchronously submitted decision or fact for retention",
+    requiredFields: ["bank", "payloadKind", "operationId", "resourcePath"],
+  },
+  {
+    kind: "recall",
+    summary: "Recalled relevant facts and evidence chunks",
+    requiredFields: ["matchCount", "facts", "chunkPaths"],
+  },
+  {
+    kind: "knowledge_page",
+    summary: "Knowledge page created or refreshed",
+    requiredFields: ["pagePath", "sourceQuery", "tags", "operationId"],
+  },
+] as const;
+
+export interface HintSpec {
+  readonly scenario: string;
+  readonly diagnosis: string;
+  readonly suggestedAction: string;
+}
+
+export const HINT_TEMPLATES: readonly HintSpec[] = [
+  {
+    scenario: "unresolved_intent",
+    diagnosis: "Missing required action verb or ambiguous intent.",
+    suggestedAction: "Provide an explicit intent with browse/search/create/retain keywords.",
+  },
+  {
+    scenario: "ambiguous_bank",
+    diagnosis: "Multiple banks configured but write operation did not specify target bank.",
+    suggestedAction: "Specify target bank using `target: '<bank>'`.",
+  },
+  {
+    scenario: "not_found",
+    diagnosis: "Target resource or operation was not found.",
+    suggestedAction: "Check existing resources with directory read or verify the resource ID.",
+  },
+  {
+    scenario: "readonly_subagent_guard",
+    diagnosis: "Write operation blocked in readonly subagent environment.",
+    suggestedAction: "Pass content or findings back to main session to execute the write.",
+  },
+  {
+    scenario: "offline_queued",
+    diagnosis: "Remote Hindsight instance temporarily offline; payload saved to local retry queue.",
+    suggestedAction: "Payload is queued in local filesystem and will automatically retry in background.",
+  },
+] as const;
 
 // ─────────────────────────────────────────────────────────────
 // 5. 队列
@@ -327,19 +516,15 @@ export const JUDGE_QUESTIONS: readonly JudgeQuestionSpec[] = JUDGE_QUESTIONS_LIT
 //    同一套状态机。claim 用原子 rename，恢复按 PID 存活与超时。
 // ─────────────────────────────────────────────────────────────
 
-export const QUEUE_KINDS = ["pending", "tool"] as const;
-export type QueueKind = (typeof QUEUE_KINDS)[number];
-
-export const QUEUE_STATES = ["queued", "inflight", "sent", "failed"] as const;
+export const QUEUE_STATES = ["queued", "retrying", "sent", "failed"] as const;
 export type QueueState = (typeof QUEUE_STATES)[number];
 
 const QUEUE_TRANSITIONS_LITERAL = [
-  { from: "queued",   to: "inflight", on: "claim" },
-  { from: "inflight", to: "sent",     on: "ack" },
-  { from: "inflight", to: "queued",   on: "release" },
-  { from: "inflight", to: "queued",   on: "recover" },
-  { from: "inflight", to: "failed",   on: "reject" },
-  { from: "failed",   to: "queued",   on: "retry" },
+  { from: "queued",   to: "retrying", on: "submit" },
+  { from: "retrying", to: "sent",     on: "ack" },
+  { from: "retrying", to: "queued",   on: "retry" },
+  { from: "retrying", to: "failed",   on: "reject" },
+  { from: "failed",   to: "queued",   on: "manual_retry" },
 ] as const satisfies readonly QueueTransition[];
 
 export interface QueueTransition {
@@ -351,12 +536,9 @@ export interface QueueTransition {
 export const QUEUE_TRANSITIONS: readonly QueueTransition[] = QUEUE_TRANSITIONS_LITERAL;
 
 export const QUEUE_LAYOUT = {
-  root: "<pluginState>/queue/<session-id>",
+  root: ".omp/retry-queue",
   pendingDir: "pending",
-  toolDir: "tool",
   failedDir: "failed",
-  inflightDir: ".inflight/<claim-id>",
-  claimFile: ".claim.json",
 } as const;
 
 // ─────────────────────────────────────────────────────────────
@@ -402,8 +584,8 @@ const FAILURE_MODES_LITERAL = [
   { scenario: "hindsight-unreachable", behavior: "recall 跳过；retain 只入队", surface: "hindsight://plugin/config + 状态条" },
   { scenario: "reflect-timeout-or-5xx", behavior: "页搜索 → observations recall，共用 injectTimeoutMs", surface: "hindsight://plugin/operations" },
   { scenario: "judge-unavailable", behavior: "工具报错，不降级猜测", surface: "工具返回值" },
-  { scenario: "queue-corrupt-entry", behavior: "跳过该条并记失败，不阻塞其他", surface: "hindsight://queue" },
-  { scenario: "inflight-abandoned", behavior: "PID 不存活或超时则恢复回 queued", surface: "hindsight://queue" },
+  { scenario: "queue-corrupt-entry", behavior: "跳过该条并记失败，不阻塞其他", surface: "hindsight://plugin/queue" },
+  { scenario: "retry-timeout", behavior: "离线重试超限移至 failed 目录，不阻塞新任务", surface: "hindsight://plugin/queue" },
   { scenario: "config-invalid", behavior: "插件静止，不注册工具与路由", surface: "状态条 unhealthy" },
   { scenario: "path-mapping-miss", behavior: "叶只渲染库内信息，不报错", surface: "文档叶正文" },
 ] as const satisfies readonly FailureModeSpec[];
@@ -435,7 +617,7 @@ const MODULES_LITERAL = [
   { name: "lifecycle",   layer: "adapter",  responsibility: "omp 事件接入：session_start/shutdown、before_agent_start、context、agent_end" },
   { name: "recall",      layer: "adapter",  responsibility: "RECALL_LAYERS 实现：L1 拼接、L2 查询构造与注入、围栏" },
   { name: "retain",      layer: "adapter",  responsibility: "flush 时机表、pending 标记、tool entry 入队" },
-  { name: "delivery",    layer: "adapter",  responsibility: "tool 队列投递端：claim → POST memories → ack/reject" },
+  { name: "delivery",    layer: "adapter",  responsibility: "Hindsight HTTP 异步提交端，离线时写入本地 retry-queue 并在后台重试" },
   { name: "tool",        layer: "entry",    responsibility: "单工具注册、审批级别、子代理只读" },
   { name: "url",         layer: "entry",    responsibility: "internal url handler 注册，委托 paths+render" },
   { name: "commands",    layer: "entry",    responsibility: "slash 子命令（人用）" },
@@ -464,6 +646,10 @@ export const INVARIANTS = [
   { id: "INV-8", statement: "库内数据叶不可变，运维视图可变", check: "PATH_ROUTES.immutable 与 handler 返回一致" },
   { id: "INV-9", statement: "依赖只从 entry 经 adapter 指向 core", check: "模块 import 图无反向边" },
   { id: "INV-10", statement: "observationScopes 必填，不给静默默认", check: "配置校验拒绝缺失，插件静止于 INVALID_CONFIG" },
+  { id: "INV-11", statement: "单工具参数仅限 intent/content/file/target 四项，严禁暴露宽泛 meta", check: "TOOL_PARAMETERS 严格为四项且必需性自洽" },
+  { id: "INV-12", statement: "长篇载荷（content/file）严禁进入 System One 判定上下文", check: "CONTEXT_PROJECTIONS[*].forbidden 包含 payload_text" },
+  { id: "INV-13", statement: "失败反馈必须携带启发式修复调用模板", check: "HINT_TEMPLATES 覆盖全部失败模式建议" },
+  { id: "INV-14", statement: "本地到云端的文档同步由 Agent 管理，插件不做异步异构双向同步", check: "CONFIG_KEYS 不含 pathMapping，核心层无文件监控与写回钩子" },
 ] as const;
 
 export type InvariantId = (typeof INVARIANTS)[number]["id"];

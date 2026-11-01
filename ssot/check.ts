@@ -8,7 +8,9 @@
 
 import {
   CONFIG_KEYS,
+  CONTEXT_PROJECTIONS,
   FAILURE_MODES,
+  HINT_TEMPLATES,
   INVARIANTS,
   JUDGE_QUESTIONS,
   MODULES,
@@ -18,6 +20,8 @@ import {
   QUEUE_STATES,
   QUEUE_TRANSITIONS,
   RECALL_LAYERS,
+  RECEIPT_TEMPLATES,
+  TOOL_PARAMETERS,
 } from "./spec.ts";
 
 type Failure = { readonly invariant: string; readonly detail: string };
@@ -149,6 +153,32 @@ for (const inv of INVARIANTS) {
   if (invIds.has(inv.id)) fail("meta", `不变量 ${inv.id} 重复`);
   invIds.add(inv.id);
   if (!inv.check || inv.check.length === 0) fail("meta", `不变量 ${inv.id} 缺检查方式`);
+}
+
+// INV-11：单工具参数仅限 intent/content/file/target 四项。
+const toolParamKeys = Object.keys(TOOL_PARAMETERS);
+const expectedToolParamKeys = ["intent", "content", "file", "target"];
+if (toolParamKeys.length !== 4 || !expectedToolParamKeys.every((k) => k in TOOL_PARAMETERS)) {
+  fail("INV-11", `TOOL_PARAMETERS 必须严格为 [${expectedToolParamKeys.join(", ")}]，当前为 [${toolParamKeys.join(", ")}]`);
+}
+if (!TOOL_PARAMETERS.intent?.required) {
+  fail("INV-11", "TOOL_PARAMETERS.intent 必须标为必填");
+}
+
+// INV-12：长篇载荷（content/file）严禁进入 System One 判定上下文。
+const tier1Projection = CONTEXT_PROJECTIONS.find((p) => p.questionId === "action_family");
+if (!tier1Projection || !tier1Projection.forbidden.includes("payload_text")) {
+  fail("INV-12", "action_family 投影必须包含 payload_text 在 forbidden 清单中");
+}
+
+// INV-13：失败反馈必须携带启发式修复调用模板。
+if (HINT_TEMPLATES.length < 5) {
+  fail("INV-13", `HINT_TEMPLATES 至少包含 5 种典型失败场景，当前为 ${HINT_TEMPLATES.length}`);
+}
+for (const h of HINT_TEMPLATES) {
+  if (!h.suggestedAction || h.suggestedAction.length === 0) {
+    fail("INV-13", `场景 ${h.scenario} 缺少 suggestedAction 调用模板`);
+  }
 }
 
 if (failures.length === 0) {

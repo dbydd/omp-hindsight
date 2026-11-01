@@ -1,31 +1,19 @@
 # Hindsight-OMP 技术设计文档
 
-本文档集阐述 `hindsight-omp` 插件的系统架构、意图判定网络、运行时生命周期与工程决策。
+本文档集阐述 `omp-hindsight` 插件的系统架构、意图判定网络、运行时生命周期与工程决策。
 
-插件的目标是在 `oh-my-pi`（omp）编码助手中集成自托管与云端 Hindsight 记忆系统。系统向 Agent 提供两项核心能力：将记忆库作为虚拟文件系统挂载以供自由浏览，以及通过单工具与分层判定网络执行精确的记忆读写。
+---
 
-## 目录分层架构
+## 核心文档架构
 
-文档按照由宏观架构到底层机制、再到参考手册的逻辑，分为四个部分：
+为了避免碎片化阅读，文档集被收敛为 **3 份相互独立、自含且深入的核心技术文档**，辅以机器自动派生的单一真值源（SSOT）参考手册：
 
 ```
 docs/
 ├── README.md                      # 本文档：全局导航与阅读指南
-├── 01-architecture/               # 第一部分：体系架构与核心决策
-│   ├── 01-system-overview.md      # 整体架构：单工具、虚拟文件系统与分层架构总览
-│   ├── 02-why-single-tool.md      # 接口演进：从 20+ 平铺工具到单工具调用的原因
-│   ├── 03-virtual-filesystem.md   # 资源系统：hindsight:// 虚拟文件系统与本地映射
-│   ├── 04-non-obvious-facts.md    # 决策内幕：被省略的 8 个核心工程权衡与陷阱解析
-│   └── 05-history-vs-hindsight-first-principles.md # 【回归初心】omp 会话历史(history://)与 Hindsight 可复用知识的正交边界
-├── 02-judge-system/               # 第二部分：分层判定与参数物化系统
-│   ├── 01-routing-topology.md     # 判定网络：从自然语言到原子动作的有限分支树
-│   ├── 02-choice-nodes.md         # 节点手册：每个选择题的提问、候选动作与证据判据
-│   ├── 03-two-stage-slots.md      # 无损物化：仅提取原文切片与确定性装配机制
-│   └── 04-context-isolation.md    # 上下文隔离：路由判定为何对历史对话保持盲目
-├── 03-runtime-lifecycle/          # 第三部分：运行时生命周期与背景机制
-│   ├── 01-adaptive-recall.md      # 动态记忆：长程自治工作流下的上下文感知与 Skill 注入
-│   ├── 02-async-queue.md          # 写入管道：基于目录原子重命名的无锁持久化队列
-│   └── 03-session-shaping.md      # 数据清洗：会话内容过滤、元数据剥离与防反馈环
+├── 01-system-architecture.md      # 第一部分：系统架构与设计全景（核心痛点、端到端交互实例、模块图、四大工程决策）
+├── 02-judge-system.md             # 第二部分：System One 判定系统、参数物化与执行规约（对接 omp 原生 judge、同类聚类两级决策、两阶段参数物化）
+├── 03-runtime-lifecycle.md        # 第三部分：运行时生命周期、自适应 Recall 与高可靠队列（自治工作流动态 Skill 注入、磁盘目录原子重命名队列）
 └── generated/                     # 第四部分：单一真值源（SSOT）自动派生参考
     ├── operations.md              # 26 个受控动作清单与参数要求
     ├── config.md                  # 33 个配置项的定义、类型与默认值
@@ -34,18 +22,23 @@ docs/
     └── runtime.md                 # 队列状态与运行时状态迁移表
 ```
 
-## 阅读路线推荐
+---
 
-读者可根据自身关注的侧重点选择阅读路径：
+## 核心文档导读
 
-1. **全面了解系统**：
-   从 [01-architecture/01-system-overview.md](01-architecture/01-system-overview.md) 开始，掌握系统的三大支柱，然后阅读 [01-architecture/04-non-obvious-facts.md](01-architecture/04-non-obvious-facts.md) 理解背后的工程取舍。
-
-2. **关注自然语言与工具调用精准度**：
-   重点阅读 [02-judge-system/](02-judge-system/) 目录下的四篇文档，了解系统如何通过低分支判决树与两阶段参数物化，消除大模型的参数幻觉。
-
-3. **关注长程任务执行与背景写入稳定性**：
-   重点阅读 [03-runtime-lifecycle/](03-runtime-lifecycle/) 目录下的文档，了解自治循环中的上下文动态感知与基于文件系统的无崩溃写入队列。
-
-4. **查阅配置与技术参数**：
-   直接查看 [generated/config.md](generated/config.md) 与 [generated/operations.md](generated/operations.md)。这些文档由代码自动生成，保证与实现 100% 同步。
+1. **[01-system-architecture.md](01-system-architecture.md)（系统架构与设计全景）**：
+   - 普适定位：通用 omp × Hindsight 记忆与知识集成插件，从高标准研究与复杂多代理工程实践中演进而来；
+   - 五大端到端交互实例：虚拟知识阅读、架构决策沉淀、自治编码感知、全虚拟多模态图文闭环（与物理磁盘彻底解耦）、Tern 伴侣窗格静默视觉渲染；
+   - 核心决策：会话流水账归 `history://`，知识归 Hindsight；单工具收敛；HTTP 原生异步与本地离线重试；pathMapping 可选源码绑定；人机（H2M 一跳证据验真与死链审查）与机机（M2M 子代理隐式接力）功效。
+2. **[02-judge-system.md](02-judge-system.md)（System One 判定系统、参数物化与执行规约）**：
+   - 阐述对接 omp 原生 `modelRoles.judge`（System One 模型）的机制；
+   - 说明为什么不存在“首尾效应”，但依然需要“同类聚类分层决策”；
+   - 规范输入状态（State Projection）的高信噪比组装，列出动作族系与细化动作的锐利判据；
+   - 详解两阶段参数物化：模型只标原文指针（span），代码物理切片复制，实现 100% 原始保真与零参数幻觉。
+3. **[03-runtime-lifecycle.md](03-runtime-lifecycle.md)（运行时生命周期、自适应 Recall 与高可靠队列）**：
+   - 三层注入模型与长程自治中的自适应上下文提取：报错优先指纹、行动意图提取、反向踩坑熔断通道（Anti-Pattern Guardrail）与子代理隐式接力；
+   - Hindsight 原生异步提交（HTTP 202）与极简本地离线失败重试队列（`.omp/retry-queue/`）；
+   - Tern 专武联动：图形拓扑与大盘监视分流至伴侣窗格，保持 Agent 会话 Transcript 零上下文噪音；
+   - 系统不变量与失败优雅降级逻辑。
+4. **[generated/](generated/)（SSOT 自动派生参考）**：
+   - 由 `bun ssot/gen.ts` 自动生成的查阅表，保证与代码实现 100% 同步。

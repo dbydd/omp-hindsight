@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hindsight-OMP TUI/TSP 组件打样原型</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --surface-hover: #1f242c;
+      --border: #30363d;
+      --border-accent: #388bfd;
+      --fg: #c9d1d9;
+      --fg-bright: #f0f6fc;
+      --muted: #8b949e;
+      --accent: #58a6ff;
+      --accent-bg: rgba(56, 139, 253, 0.12);
+      --success: #3fb950;
+      --success-bg: rgba(63, 185, 80, 0.12);
+      --warning: #d29922;
+      --warning-bg: rgba(210, 153, 34, 0.12);
+      --error: #f85149;
+      --error-bg: rgba(248, 81, 73, 0.12);
+      --purple: #bc8cff;
+      --purple-bg: rgba(188, 140, 255, 0.12);
+      --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    }
+
+    [data-theme="light"] {
+      --bg: #ffffff;
+      --surface: #f6f8fa;
+      --surface-hover: #eaeef2;
+      --border: #d0d7de;
+      --border-accent: #0969da;
+      --fg: #24292f;
+      --fg-bright: #1f2328;
+      --muted: #57606a;
+      --accent: #0969da;
+      --accent-bg: rgba(9, 105, 218, 0.08);
+      --success: #1a7f37;
+      --success-bg: rgba(26, 127, 55, 0.08);
+      --warning: #9a6700;
+      --warning-bg: rgba(154, 103, 0, 0.08);
+      --error: #cf222e;
+      --error-bg: rgba(207, 34, 46, 0.08);
+      --purple: #8250df;
+      --purple-bg: rgba(130, 80, 223, 0.08);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--fg);
+      font-family: var(--font-sans);
+      font-size: 13px;
+      line-height: 1.5;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+      user-select: none;
+    }
+
+    /* 顶部模拟状态条与切换 */
+    header.demo-header {
+      padding: 10px 16px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 12px;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-weight: 500;
+      font-family: var(--font-mono);
+      font-size: 11px;
+    }
+    .badge-success { background: var(--success-bg); color: var(--success); }
+    .badge-purple { background: var(--purple-bg); color: var(--purple); }
+    .badge-warning { background: var(--warning-bg); color: var(--warning); }
+
+    /* 主界面模拟区 */
+    main.workspace {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      padding: 16px;
+      gap: 16px;
+      overflow-y: auto;
+      max-width: 900px;
+      margin: 0 auto;
+      width: 100%;
+    }
+
+    /* 模拟对话消息流 */
+    .transcript {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .msg-bubble {
+      padding: 12px 16px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      font-size: 13px;
+    }
+    .msg-user {
+      border-color: var(--border);
+      background: transparent;
+      align-self: flex-start;
+      max-width: 85%;
+    }
+    .msg-user .role-tag {
+      font-size: 11px;
+      color: var(--muted);
+      margin-bottom: 4px;
+      font-weight: 600;
+    }
+
+    /* 专属 Hindsight Recall 注入卡片（彻底不同于 user 消息） */
+    .msg-recall-card {
+      border: 1px solid var(--purple);
+      background: var(--purple-bg);
+      border-radius: 8px;
+      padding: 14px 16px;
+      width: 100%;
+      position: relative;
+    }
+    .recall-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+      padding-bottom: 6px;
+      border-bottom: 1px dashed rgba(188, 140, 255, 0.3);
+    }
+    .recall-title {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-weight: 600;
+      color: var(--purple);
+      font-size: 12px;
+    }
+    .recall-content {
+      color: var(--fg-bright);
+      font-size: 12.5px;
+      line-height: 1.6;
+    }
+    .recall-item {
+      margin-bottom: 8px;
+      padding-left: 12px;
+      border-left: 2px solid var(--purple);
+    }
+    .recall-item.warning {
+      border-left-color: var(--warning);
+      color: var(--warning);
+    }
+    .recall-link {
+      color: var(--accent);
+      text-decoration: none;
+      font-family: var(--font-mono);
+      font-size: 11px;
+    }
+    .recall-link:hover { text-decoration: underline; }
+
+    /* aboveEditor 挂件区域 (核心常驻组件) */
+    .above-editor-widget {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px 6px 0 0;
+      padding: 6px 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 11.5px;
+      font-family: var(--font-mono);
+    }
+    .status-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--success);
+      display: inline-block;
+      box-shadow: 0 0 6px var(--success);
+    }
+    .status-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    button.btn-chip {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--fg);
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-family: var(--font-sans);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      transition: all 0.15s ease;
+    }
+    button.btn-chip:hover {
+      background: var(--surface-hover);
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    /* 模拟编辑器输入框 */
+    .mock-editor {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-top: none;
+      border-radius: 0 0 6px 6px;
+      padding: 12px;
+      color: var(--muted);
+      font-size: 13px;
+      min-height: 48px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    /* 模态弹层 (nativeOverlay 模拟) */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.65);
+      backdrop-filter: blur(4px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s ease;
+    }
+    .modal-backdrop.open {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .modal-sheet {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      width: 680px;
+      max-width: 90vw;
+      max-height: 85vh;
+      border-radius: 10px;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.4);
+      transform: translateY(10px) scale(0.98);
+      transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .modal-backdrop.open .modal-sheet {
+      transform: translateY(0) scale(1);
+    }
+    .modal-header {
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .modal-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--fg-bright);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .modal-close {
+      background: transparent;
+      border: none;
+      color: var(--muted);
+      font-size: 16px;
+      cursor: pointer;
+      padding: 4px 8px;
+      border-radius: 4px;
+    }
+    .modal-close:hover { color: var(--fg-bright); background: var(--surface-hover); }
+
+    /* 选项卡导航 */
+    .tabs-nav {
+      display: flex;
+      border-bottom: 1px solid var(--border);
+      padding: 0 16px;
+      gap: 12px;
+      background: rgba(0,0,0,0.1);
+    }
+    .tab-btn {
+      padding: 10px 4px;
+      border: none;
+      background: transparent;
+      color: var(--muted);
+      font-size: 12.5px;
+      font-weight: 500;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: all 0.15s ease;
+    }
+    .tab-btn:hover { color: var(--fg); }
+    .tab-btn.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+    }
+
+    .modal-body {
+      padding: 18px;
+      overflow-y: auto;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .form-label {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--fg-bright);
+    }
+    .form-desc {
+      font-size: 11.5px;
+      color: var(--muted);
+      margin-top: -2px;
+    }
+    .form-input {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--fg-bright);
+      padding: 8px 10px;
+      border-radius: 6px;
+      font-size: 12.5px;
+      font-family: var(--font-mono);
+      outline: none;
+    }
+    .form-input:focus { border-color: var(--accent); }
+
+    /* 卡片式列表 (Bank 列表 / 队列列表) */
+    .card-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .sub-card {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .sub-card-info {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .sub-card-title {
+      font-weight: 600;
+      font-size: 12.5px;
+      color: var(--fg-bright);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .sub-card-desc {
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .modal-footer {
+      padding: 12px 18px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      background: rgba(0,0,0,0.05);
+    }
+    .btn-primary {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      padding: 6px 14px;
+      border-radius: 5px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+    .btn-secondary {
+      background: var(--surface-hover);
+      color: var(--fg);
+      border: 1px solid var(--border);
+      padding: 6px 12px;
+      border-radius: 5px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .btn-primary:hover { opacity: 0.9; }
+    .btn-secondary:hover { background: var(--border); }
+  </style>
+</head>
+<body>
+
+  <!-- 模拟顶部导航与模式切换 -->
+  <header class="demo-header">
+    <div style="display:flex; align-items:center; gap:8px;">
+      <strong>Hindsight-OMP TUI & TSP 视觉打样</strong>
+      <span class="badge badge-purple">TSP 纯鼠标优先交互范式</span>
+    </div>
+    <div style="display:flex; align-items:center; gap:10px;">
+      <button class="btn-chip" onclick="toggleTheme()">🌓 切换亮/暗主题</button>
+      <button class="btn-chip" onclick="openModal('config')">⚙️ 打开配置 Sheet</button>
+    </div>
+  </header>
+
+  <!-- 工作区容器 -->
+  <main class="workspace">
+
+    <!-- 对话 Transcript 模拟 -->
+    <div class="transcript">
+      <div class="msg-bubble msg-user">
+        <div class="role-tag">USER</div>
+        帮我重构一下数据库批量写入模块，另外在 macOS arm64 下运行测试老是报连接被重置。
+      </div>
+
+      <!-- 专属 Hindsight 知识注入卡片（彻底不同于普通 user 消息） -->
+      <div class="msg-recall-card">
+        <div class="recall-header">
+          <div class="recall-title">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm1 14h-2v-2h2zm0-4h-2V7h2z"/></svg>
+            HINDSIGHT CONTEXT GUIDELINES (动态技能挂件)
+          </div>
+          <span style="font-size:11px; color:var(--muted); font-family:var(--font-mono);">bank: vault</span>
+        </div>
+        <div class="recall-content">
+          <div class="recall-item">
+            <strong>【工程规约】关于 Oracle 批量绑定：</strong>
+            遇到 ORA-01461 或连接被重置时，必须显式在连接池中开启 <code>SetBufferLength</code> 并设置 <code>HNSW_M48</code> 开关。
+            <div><a class="recall-link" href="#">hindsight://vault/chunks/chk-883a (1-hop 证据回溯)</a></div>
+          </div>
+          <div class="recall-item warning">
+            <strong>【反向踩坑熔断】Anti-Pattern Warning：</strong>
+            历史验证表明，在此环境下使用 <code>pkill</code> 或降低 Socket 超时会导致服务假死，请勿尝试。
+            <div><a class="recall-link" href="#">hindsight://vault/chunks/chk-991f</a></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="msg-bubble" style="background:var(--surface);">
+        <div style="font-size:11px; color:var(--muted); font-weight:600; margin-bottom:4px;">ASSISTANT</div>
+        收到！根据检索到的工程规约与熔断警告，我将通过在连接池配置中注入 <code>SetBufferLength</code> 来解决该问题，并避开调整 Socket 超时的死胡同方案。
+      </div>
+    </div>
+
+    <!-- 核心挂件：aboveEditor 常驻状态条 (固定在输入框上方) -->
+    <div>
+      <div class="above-editor-widget">
+        <div class="status-left">
+          <span style="display:flex; align-items:center; gap:6px;">
+            <span class="status-dot"></span>
+            <strong style="color:var(--fg-bright);">Hindsight</strong>: Connected
+          </span>
+          <span style="color:var(--muted);">|</span>
+          <span>Banks: <strong>2</strong> (vault, agent)</span>
+          <span style="color:var(--muted);">|</span>
+          <span>Retain Queue: <strong style="color:var(--success);">0</strong></span>
+        </div>
+        <div class="status-actions">
+          <button class="btn-chip" onclick="openModal('config')">⚙️ 设置</button>
+          <button class="btn-chip" onclick="openModal('queue')">📋 队列</button>
+          <button class="btn-chip" onclick="openModal('tree')">🌳 知识树</button>
+        </div>
+      </div>
+
+      <!-- 模拟输入编辑器 -->
+      <div class="mock-editor">
+        <span>输入指令，或调用 hindsight("记录此决策...")</span>
+        <span style="font-size:11px; font-family:var(--font-mono); color:var(--muted);">ESC 退出 / 鼠标点击优先</span>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- 模拟居中毛玻璃 Sheet 模态层 (nativeOverlay) -->
+  <div class="modal-backdrop" id="modalBackdrop" onclick="closeModalOnBackdrop(event)">
+    <div class="modal-sheet">
+      <div class="modal-header">
+        <div class="modal-title">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+          Hindsight 控制台与配置中心
+        </div>
+        <button class="modal-close" onclick="closeModal()">✕</button>
+      </div>
+
+      <!-- 选项卡切换 (鼠标纯天然点击) -->
+      <nav class="tabs-nav">
+        <button class="tab-btn active" id="tab-btn-config" onclick="switchTab('config')">基础配置</button>
+        <button class="tab-btn" id="tab-btn-banks" onclick="switchTab('banks')">记忆库 (Banks)</button>
+        <button class="tab-btn" id="tab-btn-queue" onclick="switchTab('queue')">重试队列</button>
+        <button class="tab-btn" id="tab-btn-tree" onclick="switchTab('tree')">知识库全景</button>
+      </nav>
+
+      <div class="modal-body" id="tabContent">
+        <!-- Tab 内容将动态注入 -->
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn-secondary" onclick="closeModal()">取消</button>
+        <button class="btn-primary" onclick="saveSettings()">保存配置</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let currentTab = 'config';
+
+    const tabTemplates = {
+      config: `
+        <div class="form-group">
+          <label class="form-label">Hindsight 服务地址 (baseUrl)</label>
+          <span class="form-desc">指向本机 Docker 容器或云端实例端口</span>
+          <input class="form-input" value="http://127.0.0.1:8888">
+        </div>
+        <div class="form-group">
+          <label class="form-label">API Key 环境变量名 (apiKeyEnvVar)</label>
+          <span class="form-desc">从环境变量安全解析，绝不写死在磁盘配置中</span>
+          <input class="form-input" value="HINDSIGHT_API_KEY">
+        </div>
+        <div class="form-group">
+          <label class="form-label">意图解构模型角色 (decomposerRole)</label>
+          <span class="form-desc">负责在入口切分长小作文与代码块的轻量角色</span>
+          <input class="form-input" value="smol">
+        </div>
+        <div class="form-group">
+          <label class="form-label">长程自治防抖轮数 (recallDebounceTurns)</label>
+          <span class="form-desc">同一文件连续微调无新报错时跳过刷库的轮数</span>
+          <input class="form-input" type="number" value="3">
+        </div>
+      `,
+      banks: `
+        <div style="font-size:12px; color:var(--muted); margin-bottom:8px;">
+          当前启用的记忆库清单（已完成 ${'${ROLE}'} 动态解析）：
+        </div>
+        <div class="card-list">
+          <div class="sub-card">
+            <div class="sub-card-info">
+              <div class="sub-card-title">
+                <span class="badge badge-purple">vault</span>
+                <span>项目核心知识库</span>
+              </div>
+              <div class="sub-card-desc">远端: vault | 访问模式: read-write | 模式: manual</div>
+              <div class="sub-card-desc" style="color:var(--accent);">映射: raw/ ➔ /Users/dbydd/.../raw/ (物理文件双向锚定)</div>
+            </div>
+            <span class="badge badge-success">正常就绪</span>
+          </div>
+          <div class="sub-card">
+            <div class="sub-card-info">
+              <div class="sub-card-title">
+                <span class="badge badge-purple">agent</span>
+                <span>当前角色临时记忆</span>
+              </div>
+              <div class="sub-card-desc">远端: agent-engineer | 访问模式: read-write | 模式: decision</div>
+            </div>
+            <span class="badge badge-success">正常就绪</span>
+          </div>
+        </div>
+      `,
+      queue: `
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+          <span style="font-size:12px; color:var(--muted);">本地离线重试队列 (.omp/retry-queue)</span>
+          <button class="btn-chip" onclick="alert('队列已是最新')">🔄 检查重发</button>
+        </div>
+        <div style="background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:20px; text-align:center; color:var(--muted);">
+          <div style="font-size:24px; margin-bottom:6px;">✨</div>
+          <div style="font-weight:600; color:var(--fg-bright); font-size:13px;">队列完全清空</div>
+          <div style="font-size:11.5px; margin-top:4px;">所有显式决策与事实均已成功通过 HTTP 202 异步交付给 Hindsight。</div>
+        </div>
+      `,
+      tree: `
+        <div style="font-size:12px; color:var(--muted); margin-bottom:8px;">
+          全景知识页层级目录 (Knowledge Base Tree)：
+        </div>
+        <div style="background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:12px; font-family:var(--font-mono); font-size:12px; line-height:1.8;">
+          <div>📁 <strong>Architecture/</strong></div>
+          <div style="padding-left:16px;">📄 <a class="recall-link" href="#">VectorIndexing.md</a> <span class="badge badge-success" style="font-size:9px;">delta-synced</span></div>
+          <div style="padding-left:16px;">📄 <a class="recall-link" href="#">StateProjectionProtocol.md</a></div>
+          <div>📁 <strong>Decisions/</strong></div>
+          <div style="padding-left:16px;">📄 <a class="recall-link" href="#">SingleToolConvergence.md</a></div>
+          <div style="padding-left:16px;">📄 <a class="recall-link" href="#">OfflineRetryQueueDesign.md</a></div>
+          <div>📁 <strong>Runbooks/</strong></div>
+          <div style="padding-left:16px;">📄 <a class="recall-link" href="#">OracleBufferConfiguration.md</a></div>
+        </div>
+      `
+    };
+
+    function switchTab(tabId) {
+      currentTab = tabId;
+      document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+      const activeBtn = document.getElementById('tab-btn-' + tabId);
+      if (activeBtn) activeBtn.classList.add('active');
+      document.getElementById('tabContent').innerHTML = tabTemplates[tabId];
+    }
+
+    function openModal(tab = 'config') {
+      document.getElementById('modalBackdrop').classList.add('open');
+      switchTab(tab);
+    }
+
+    function closeModal() {
+      document.getElementById('modalBackdrop').classList.remove('open');
+    }
+
+    function closeModalOnBackdrop(e) {
+      if (e.target.id === 'modalBackdrop') closeModal();
+    }
+
+    function saveSettings() {
+      alert('配置已成功保存！插件运行时已原地热更新重新装配。');
+      closeModal();
+    }
+
+    function toggleTheme() {
+      const current = document.documentElement.getAttribute('data-theme');
+      document.documentElement.setAttribute('data-theme', current === 'light' ? 'dark' : 'light');
+    }
+
+    // 初始化渲染
+    switchTab('config');
+  </script>
+</body>
+</html>

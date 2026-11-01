@@ -12,18 +12,21 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   CONFIG_KEYS,
+  CONTEXT_PROJECTIONS,
   FAILURE_MODES,
+  HINT_TEMPLATES,
   INVARIANTS,
   JUDGE_QUESTIONS,
   MODULES,
   OPERATIONS,
   PATH_ROUTES,
-  QUEUE_KINDS,
   QUEUE_STATES,
   QUEUE_TRANSITIONS,
   RECALL_FENCE,
   RECALL_LAYERS,
+  RECEIPT_TEMPLATES,
   SPEC_VERSION,
+  TOOL_PARAMETERS,
 } from "./spec.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -116,12 +119,31 @@ function renderRuntime(): string {
     q.when ? `\`${q.when.question}\` ∈ {${q.when.in.join(", ")}}` : "总是提问",
   ]);
   const modules = MODULES.map((m) => [`\`${m.name}\``, m.layer, m.responsibility]);
+  const toolParams = Object.entries(TOOL_PARAMETERS).map(([name, p]) => [
+    `\`${name}\``,
+    p.type,
+    p.required ? "**是**" : "否",
+    p.description,
+  ]);
+  const projections = CONTEXT_PROJECTIONS.map((p) => [
+    `\`${p.questionId}\``,
+    p.stage,
+    cell(p.focus),
+    cell(p.groundTruth),
+    cell(p.forbidden),
+  ]);
+  const receipts = RECEIPT_TEMPLATES.map((r) => [`\`${r.kind}\``, r.summary, cell(r.requiredFields)]);
+  const hints = HINT_TEMPLATES.map((h) => [`\`${h.scenario}\``, h.diagnosis, h.suggestedAction]);
 
   return [
     header(
       "运行时机制",
-      "`RECALL_LAYERS`、`RECALL_FENCE`、`QUEUE_*`、`JUDGE_QUESTIONS`、`FAILURE_MODES`、`MODULES`",
+      "`RECALL_LAYERS`、`QUEUE_*`、`JUDGE_QUESTIONS`、`CONTEXT_PROJECTIONS`、`TOOL_PARAMETERS`、`MODULES`",
     ),
+    "",
+    "## 工具参数（TOOL_PARAMETERS）",
+    "",
+    table(["参数名", "类型", "必填", "说明"], toolParams),
     "",
     "## recall 分层",
     "",
@@ -135,13 +157,25 @@ function renderRuntime(): string {
     "",
     "## 队列",
     "",
-    `条目类型：${QUEUE_KINDS.map((k) => `\`${k}\``).join("、")}；状态：${QUEUE_STATES.map((s) => `\`${s}\``).join("、")}`,
+    `状态：${QUEUE_STATES.map((s) => `\`${s}\``).join("、")}`,
     "",
     table(["起点", "事件", "终点"], transitions),
     "",
     "## judge 决策点",
     "",
     table(["问题", "选项来源", "提问条件"], questions),
+    "",
+    "## 上下文组合与隔离矩阵（CONTEXT_PROJECTIONS）",
+    "",
+    table(["决策点", "阶段", "焦点 (Focus)", "事实 (Ground Truth)", "严禁包含 (Forbidden)"], projections),
+    "",
+    "## 标准化回执规范（RECEIPT_TEMPLATES）",
+    "",
+    table(["类型", "摘要说明", "必需字段"], receipts),
+    "",
+    "## 启发式引导规范（HINT_TEMPLATES）",
+    "",
+    table(["异常场景", "诊断原因", "建议引导动作"], hints),
     "",
     "## 失败模式",
     "",
