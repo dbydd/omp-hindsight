@@ -67,11 +67,13 @@
 | `shaping` | core | retainContent/toolFilter/strip 应用、JSONL 整形 |
 | `judge` | core | JUDGE_QUESTIONS 问答、裁剪、日志、判定转操作 |
 | `ops` | core | 按 OPERATIONS 执行具体操作并返回路径 |
+| `runtime` | core | HindsightRuntime 状态单例（client+config+healthy），只存状态不做装配 |
 | `lifecycle` | adapter | omp 事件接入：session_start/shutdown、before_agent_start、context、agent_end |
 | `recall` | adapter | RECALL_LAYERS 实现：L1 拼接、L2 查询构造与注入、围栏 |
 | `retain` | adapter | flush 时机表、pending 标记、tool entry 入队 |
+| `delivery` | adapter | tool 队列投递端：claim → POST memories → ack/reject |
 | `tool` | entry | 单工具注册、审批级别、子代理只读 |
 | `url` | entry | internal url handler 注册，委托 paths+render |
 | `commands` | entry | slash 子命令（人用） |
 | `ui` | entry | 状态条、recall 展示渲染 |
-| `runtime` | entry | 配置驱动单例，装配上述模块 |
+| `index` | entry | 扩展入口：装配上述模块（runtime 装配发生在这里） |

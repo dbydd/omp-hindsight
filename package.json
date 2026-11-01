@@ -3,7 +3,24 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "omp 的 Hindsight 记忆插件：hindsight:// 资源树 + 单工具 judge 操作面。当前为设计期，仅含事实源与检查脚本。",
+  "description": "omp 的 Hindsight 记忆插件：hindsight:// 资源树 + 单工具 judge 操作面。",
+  "omp": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@oh-my-pi/pi-agent-core": "*",
+    "@oh-my-pi/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@oh-my-pi/pi-agent-core": {
+      "optional": true
+    },
+    "@oh-my-pi/pi-coding-agent": {
+      "optional": true
+    }
+  },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
     "ssot:check": "bun ssot/check.ts",

@@ -377,14 +377,16 @@ const MODULES_LITERAL = [
   { name: "shaping",     layer: "core",     responsibility: "retainContent/toolFilter/strip 应用、JSONL 整形" },
   { name: "judge",       layer: "core",     responsibility: "JUDGE_QUESTIONS 问答、裁剪、日志、判定转操作" },
   { name: "ops",         layer: "core",     responsibility: "按 OPERATIONS 执行具体操作并返回路径" },
+  { name: "runtime",     layer: "core",     responsibility: "HindsightRuntime 状态单例（client+config+healthy），只存状态不做装配" },
   { name: "lifecycle",   layer: "adapter",  responsibility: "omp 事件接入：session_start/shutdown、before_agent_start、context、agent_end" },
   { name: "recall",      layer: "adapter",  responsibility: "RECALL_LAYERS 实现：L1 拼接、L2 查询构造与注入、围栏" },
   { name: "retain",      layer: "adapter",  responsibility: "flush 时机表、pending 标记、tool entry 入队" },
+  { name: "delivery",    layer: "adapter",  responsibility: "tool 队列投递端：claim → POST memories → ack/reject" },
   { name: "tool",        layer: "entry",    responsibility: "单工具注册、审批级别、子代理只读" },
   { name: "url",         layer: "entry",    responsibility: "internal url handler 注册，委托 paths+render" },
   { name: "commands",    layer: "entry",    responsibility: "slash 子命令（人用）" },
   { name: "ui",          layer: "entry",    responsibility: "状态条、recall 展示渲染" },
-  { name: "runtime",     layer: "entry",    responsibility: "配置驱动单例，装配上述模块" },
+  { name: "index",       layer: "entry",    responsibility: "扩展入口：装配上述模块（runtime 装配发生在这里）" },
 ] as const satisfies readonly ModuleSpec[];
 
 export const MODULES: readonly ModuleSpec[] = MODULES_LITERAL;
