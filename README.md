@@ -56,6 +56,15 @@ bun run verify
 | `bun run test:core` | `tests/core-foundation.test.ts` | 无外部资源（默认可跑） |
 | `bun run test:adapter` | `tests/adapter-layer.test.ts` | 无外部资源（默认可跑） |
 | `bun run test:container` | `tests/container-integration.test.ts` | **compose 测试实例（18888）**：建 bank、写文档、触发 LLM 抽取；需先 `docker/docker-compose.yml up -d` |
-| `bun run test:judge` | `tests/decision-paths.test.ts` | **3425 System One 端点**：真实决策模型逐题判定 |
+| `bun run test:judge` | `tests/decision-unit.test.ts` + `tests/decision-paths.test.ts` | **3425 System One 端点**：全量决策测试（单元+E2E） |
+| `bun run test:judge:unit` | `tests/decision-unit.test.ts` | 单题独立发问，测试各决策点单点分类精度 |
+| `bun run test:judge:e2e` | `tests/decision-paths.test.ts` | 级联链路综合判定（含实战 R1-R12, Q1-Q7 样本） |
+| `bun run test:judge:family` | `tests/decision-unit.test.ts -t "action_family"` | **单点细切**：仅测试一审族系分类（`action_family`） |
+| `bun run test:judge:depth` | `tests/decision-unit.test.ts -t "retrieval_depth"` | **单点细切**：仅测试检索深度（recall vs reflect） |
+| `bun run test:judge:kb` | `tests/decision-unit.test.ts -t "knowledge_base_action"` | **单点细切**：仅测试知识库动作细化 |
+| `bun run test:judge:mm` | `tests/decision-unit.test.ts -t "mental_model_action"` | **单点细切**：仅测试心智模型动作细化 |
+| `bun run test:judge:ops` | `tests/decision-unit.test.ts -t "operation_action"` | **单点细切**：仅测试运维动作细化 |
+| `bun run test:judge:bank` | `tests/decision-unit.test.ts -t "target_bank"` | **单点细切**：仅测试目标记忆库消歧 |
 
+所有决策样本均外置于数据文件 `tests/fixtures/decision-dataset.json`，无硬编码。新增样本只需向 JSON 追加条目，无需修改测试代码。
 `verify` 只包含 `test:core` 与 `test:adapter`。`test:container` 与 `test:judge` 涉及外部资源与模型调用：**agent 必须先征得用户口头同意才能运行**；用户自己在终端跑不受限。
