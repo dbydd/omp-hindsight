@@ -25,6 +25,8 @@
 | `hindsight://:bank/operations` | 目录 | 可变 | `/banks/:bank/operations` | 全部 |
 | `hindsight://:bank/operations/:id` | 叶 | 可变 | `/banks/:bank/operations/:id` | 全部 |
 | `hindsight://:bank/attachments/:id` | 叶 | 不可变 | `/banks/:bank/attachments/:id` | 全部 |
+| `hindsight://:bank/directives` | 目录 | 可变 | `/banks/:bank/directives` | 全部 |
+| `hindsight://:bank/directives/:id` | 叶 | 可变 | `/banks/:bank/directives/:id` | 全部 |
 | `hindsight://:bank/llm-requests` | 叶 | 可变 | `/banks/:bank/llm-requests` | 全部 |
 | `hindsight://:bank/stats` | 叶 | 可变 | `/banks/:bank/stats` | 全部 |
 | `hindsight://queue` | 目录 | 可变 | 本地状态 | 主会话 |

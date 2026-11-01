@@ -76,14 +76,18 @@ for (const r of PATH_ROUTES) {
 
 // judge 问题：when 指向已存在的问题；optionsFrom 合法。
 const questionIds = new Set(JUDGE_QUESTIONS.map((q) => q.id));
-const operationIds = new Set(Object.keys(OPERATIONS));
 for (const q of JUDGE_QUESTIONS) {
   if (q.when && !questionIds.has(q.when.question)) {
     fail("INV-4", `问题 ${q.id} 的 when 指向不存在的问题 ${q.when.question}`);
   }
   if (q.when) {
+    // when.in 的合法值是「上一问的选项集合」——新题树里 when 沿 J/R/W 的分支走，
+    // 值是选项名而不是操作名；旧的按 OPERATIONS 校验的口径只适用于已删除的平面题。
+    const parentOptions = new Set(
+      (JUDGE_QUESTIONS.find((p) => p.id === q.when!.question)?.optionsFrom ?? []).slice(),
+    );
     for (const opt of q.when.in) {
-      if (!operationIds.has(opt)) fail("INV-4", `问题 ${q.id} 的 when.in 含未登记操作 ${opt}`);
+      if (!parentOptions.has(opt)) fail("INV-4", `问题 ${q.id} 的 when.in ${opt} 不是 ${q.when.question} 的选项`);
     }
   }
   if (q.optionsFrom === "OPERATIONS") continue;

@@ -167,6 +167,8 @@ const PATH_ROUTES_LITERAL = [
   { pattern: ":bank/operations",          backing: "dir",  immutable: false, endpoint: "/banks/:bank/operations",        scope: "all" },
   { pattern: ":bank/operations/:id",      backing: "leaf", immutable: false, endpoint: "/banks/:bank/operations/:id",    scope: "all" },
   { pattern: ":bank/attachments/:id",     backing: "leaf", immutable: true,  endpoint: "/banks/:bank/attachments/:id",   scope: "all" },
+  { pattern: ":bank/directives",          backing: "dir",  immutable: false, endpoint: "/banks/:bank/directives",         scope: "all" },
+  { pattern: ":bank/directives/:id",      backing: "leaf", immutable: false, endpoint: "/banks/:bank/directives/:id",     scope: "all" },
   { pattern: ":bank/llm-requests",        backing: "leaf", immutable: false, endpoint: "/banks/:bank/llm-requests",       scope: "all" },
   { pattern: ":bank/stats",               backing: "leaf", immutable: false, endpoint: "/banks/:bank/stats",              scope: "all" },
   { pattern: "queue",                     backing: "dir",  immutable: false, endpoint: null,                           scope: "main" },
@@ -256,13 +258,43 @@ export interface JudgeQuestionSpec {
   readonly when?: { readonly question: string; readonly in: readonly string[] };
 }
 
+/**
+ * 题树照 docs/02-judge-system/02-choice-nodes.md 的 J/R/W/S 系列写，每题 2–4 个选项。
+ * 顶层不再把 11 个操作名摊成一道题：先 J0/J2 分复合性与读写，再沿 R 或 W 分支细分到叶动作。
+ *
+ * 文档里 R5（运维查询）与 W6（任务干预）只有名字没有候选，这里补齐：
+ *   R5 = operations / queue / plugin / bank_stats —— 插件与本实例的运维视图。
+ *   W6 = cancel / retry —— 只干预后台任务，不新建内容。
+ * 文档未覆盖的「按路径读单个实体」（document / attachment / entity / bank 详情）不进题库：
+ * 只要 intent 或 meta.target 给了 hindsight:// 路径，ops 直接按 PATH_ROUTES 反解成动作，
+ * 不给浏览行为发明选择题。
+ */
 const JUDGE_QUESTIONS_LITERAL = [
-  { id: "operation", optionsFrom: "OPERATIONS" },
-  { id: "bank",      optionsFrom: "CONFIG_BANKS", when: { question: "operation", in: ["recall", "reflect", "read", "retain", "document", "entities", "kb", "mm", "bank", "attachment"] } },
-  { id: "budget",    optionsFrom: ["low", "mid", "high"], when: { question: "operation", in: ["recall", "reflect"] } },
-  { id: "kbop",      optionsFrom: ["tree", "search", "get", "create", "update", "delete"], when: { question: "operation", in: ["kb"] } },
-  { id: "mmop",      optionsFrom: ["list", "get", "create", "update", "refresh", "delete"], when: { question: "operation", in: ["mm"] } },
-  { id: "writesummary", optionsFrom: ["session-summary", "single-fact", "cancel"], when: { question: "operation", in: ["retain"] } },
+  // J 系列：结构拆分与副作用分类
+  { id: "j0", optionsFrom: ["single", "composite"] },
+  { id: "j1", optionsFrom: ["sequential", "parallel"], when: { question: "j0", in: ["composite"] } },
+  { id: "j2", optionsFrom: ["read", "write", "noop"] },
+
+  // R 系列：只读细分
+  { id: "r0", optionsFrom: ["content", "operation"], when: { question: "j2", in: ["read"] } },
+  { id: "r1", optionsFrom: ["raw_memory", "curated_knowledge"], when: { question: "r0", in: ["content"] } },
+  { id: "r2", optionsFrom: ["recall", "reflect"], when: { question: "r1", in: ["raw_memory"] } },
+  { id: "r3", optionsFrom: ["page", "mental_model"], when: { question: "r1", in: ["curated_knowledge"] } },
+  { id: "r4", optionsFrom: ["tree", "search", "get"], when: { question: "r3", in: ["page"] } },
+  { id: "r5", optionsFrom: ["operations", "queue", "plugin", "bank_stats"], when: { question: "r0", in: ["operation"] } },
+
+  // W 系列：写入细分
+  { id: "w0", optionsFrom: ["memory", "knowledge_page", "mental_model", "operation"], when: { question: "j2", in: ["write"] } },
+  { id: "w1", optionsFrom: ["inline", "reference", "session"], when: { question: "w0", in: ["memory"] } },
+  { id: "w3", optionsFrom: ["page_mutation", "folder_mutation"], when: { question: "w0", in: ["knowledge_page"] } },
+  { id: "w4", optionsFrom: ["create", "update", "delete"], when: { question: "w3", in: ["page_mutation"] } },
+  { id: "w5", optionsFrom: ["create", "refresh", "delete"], when: { question: "w0", in: ["mental_model"] } },
+  { id: "w6", optionsFrom: ["cancel", "retry"], when: { question: "w0", in: ["operation"] } },
+
+  // S 系列：目标消歧。S0 的选项是配置里的 bank 短名；候选不足两个时 judge 侧直接跳过
+  // （单元素选择题无意义）。S1 的候选来自底层查询结果，是运行时数据而不是固定枚举，
+  // 因此不进这张静态表，由 judge 在拿到 2–3 个候选时临时构造。
+  { id: "s0", optionsFrom: "CONFIG_BANKS", when: { question: "j2", in: ["read", "write"] } },
 ] as const satisfies readonly JudgeQuestionSpec[];
 
 export type JudgeQuestionId = (typeof JUDGE_QUESTIONS_LITERAL)[number]["id"];
@@ -301,6 +333,7 @@ export const QUEUE_LAYOUT = {
   root: "<pluginState>/queue/<session-id>",
   pendingDir: "pending",
   toolDir: "tool",
+  failedDir: "failed",
   inflightDir: ".inflight/<claim-id>",
   claimFile: ".claim.json",
 } as const;

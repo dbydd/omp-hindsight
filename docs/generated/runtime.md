@@ -35,12 +35,22 @@
 
 | 问题 | 选项来源 | 提问条件 |
 | --- | --- | --- |
-| `operation` | 操作目录 | 总是提问 |
-| `bank` | 配置的 bank 列表 | `operation` ∈ {recall, reflect, read, retain, document, entities, kb, mm, bank, attachment} |
-| `budget` | `low`<br>`mid`<br>`high` | `operation` ∈ {recall, reflect} |
-| `kbop` | `tree`<br>`search`<br>`get`<br>`create`<br>`update`<br>`delete` | `operation` ∈ {kb} |
-| `mmop` | `list`<br>`get`<br>`create`<br>`update`<br>`refresh`<br>`delete` | `operation` ∈ {mm} |
-| `writesummary` | `session-summary`<br>`single-fact`<br>`cancel` | `operation` ∈ {retain} |
+| `j0` | `single`<br>`composite` | 总是提问 |
+| `j1` | `sequential`<br>`parallel` | `j0` ∈ {composite} |
+| `j2` | `read`<br>`write`<br>`noop` | 总是提问 |
+| `r0` | `content`<br>`operation` | `j2` ∈ {read} |
+| `r1` | `raw_memory`<br>`curated_knowledge` | `r0` ∈ {content} |
+| `r2` | `recall`<br>`reflect` | `r1` ∈ {raw_memory} |
+| `r3` | `page`<br>`mental_model` | `r1` ∈ {curated_knowledge} |
+| `r4` | `tree`<br>`search`<br>`get` | `r3` ∈ {page} |
+| `r5` | `operations`<br>`queue`<br>`plugin`<br>`bank_stats` | `r0` ∈ {operation} |
+| `w0` | `memory`<br>`knowledge_page`<br>`mental_model`<br>`operation` | `j2` ∈ {write} |
+| `w1` | `inline`<br>`reference`<br>`session` | `w0` ∈ {memory} |
+| `w3` | `page_mutation`<br>`folder_mutation` | `w0` ∈ {knowledge_page} |
+| `w4` | `create`<br>`update`<br>`delete` | `w3` ∈ {page_mutation} |
+| `w5` | `create`<br>`refresh`<br>`delete` | `w0` ∈ {mental_model} |
+| `w6` | `cancel`<br>`retry` | `w0` ∈ {operation} |
+| `s0` | 配置的 bank 列表 | `j2` ∈ {read, write} |
 
 ## 失败模式
 

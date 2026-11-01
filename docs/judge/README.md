@@ -160,7 +160,9 @@ stateDiagram-v2
 
 ## 与现有 SSOT 的接合
 
-当前 `JUDGE_QUESTIONS.operation` 从全部 `OPERATIONS` 生成 11 个候选，`kbop/mmop` 各有 6 个候选。实现分层设计时，用 `JUDGE_NODES` 与有向边替换这组平面问题，保留唯一事实源。
+分层判定的题树已经落进 SSOT：`JUDGE_QUESTIONS` 现在是 `docs/02-judge-system/02-choice-nodes.md` 的 J/R/W/S 系列，每题 2–4 个选项，节点之间的边由每项的 `when`（上一问必须取到哪些答案）表达。没有单独的 `JUDGE_NODES` 表——题与边都在这一个数组里，避免第二份判定来源。
+
+顶层不再把 11 个操作名摊成一道题：`j0` 判复合性、`j2` 判读/写，此后沿 R 系列（只读细分）或 W 系列（写入细分）下行到叶动作，`s0` 负责 bank 消歧。原先的 `budget` 不再由题库问，改为从 `meta.slots.budget` 取、缺省 `mid`；`kbop`/`mmop`/`writesummary` 被 R4/W3/W4/W5/W1 取代。
 
 `OPERATIONS.kb/mm/bank.write=true` 只能描述粗操作族。新 `ACTION_SCHEMAS` 按叶动作记录 `effect`，例如 `kb.get=read`、`kb.node.delete=write`。兼容层会重建第二套判定来源，因此现有调用方需要同时切换。
 
