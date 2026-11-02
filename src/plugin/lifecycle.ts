@@ -206,6 +206,15 @@ export function registerLifecycle(pi: ExtensionAPI): void {
         config.injectTimeoutMs,
       );
       if (message === undefined) return;
+      // await 期间会话可能已经跑到 agent_end：跑过工具但最后一步以文本收尾的终止轮
+      // 同样满足 event.toolResults 非空，而 recall 的网络往返要几秒。
+      // 此刻再读一次 isIdle()——与 sendMessage 之间没有 await，状态不可能在两步之间变化。
+      // idle 中收到 aside 会被宿主走 #promptAgentInitiatedMessage 当成自启动输入，
+      // 以记忆为输入凭空开一轮；错过的记忆由下一个 prompt 触发点补，绝不自启。
+      if (ctx.isIdle()) {
+        pi.logger.warn("hindsight.lifecycle.turn_recall_idle_skipped");
+        return;
+      }
       lastRecallAt = Date.now();
       injectedThisSession += 1;
       recordInjected(message);
