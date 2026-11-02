@@ -1429,7 +1429,7 @@
           "intent": "修改这篇知识页的标题",
           "slots": {
             "node_id": "page-embed",
-            "name": "embedding 选型（2026）"
+            "new_name": "embedding 选型（2026）"
           },
           "expectedAction": "knowledge_base.page_update"
         },
@@ -1721,6 +1721,7 @@
       "samples": [
         {
           "intent": "把一条测试记忆写进 test-vault bank：这是 testrole 的第一次入库尝试",
+          "content": "这是 testrole 的第一次入库尝试。",
           "expectedAction": "retain",
           "expectedBank": "agent-testrole",
           "config": "$CONFIG:testrole",
@@ -1728,6 +1729,7 @@
         },
         {
           "intent": "向 Alexandria v2 知识库 vault 写入一条论文精读结论：这是 vault bank 的判断卡内容",
+          "content": "这是 vault bank 的判断卡内容：论文精读结论应随文档一起入库，判断卡单独落 ideas/。",
           "expectedAction": "retain",
           "expectedBank": "vault",
           "config": "$CONFIG:testrole",
@@ -1735,6 +1737,7 @@
         },
         {
           "intent": "把一条论文精读结论写进 vault bank",
+          "content": "SDANet 在 ×4 超分上 PSNR 28.24 dB，残差连接是性能主因。",
           "expectedAction": "retain",
           "expectedBank": "vault",
           "config": "$CONFIG:testrole",
@@ -1742,6 +1745,7 @@
         },
         {
           "intent": "把一条记忆写进 vault bank",
+          "content": "hindsight 的 retain 是异步抽取，提交后要读 operation 门牌追进度。",
           "expectedAction": "retain",
           "expectedBank": "vault",
           "config": "$CONFIG:testrole",
@@ -1749,6 +1753,7 @@
         },
         {
           "intent": "记一下 SDANet 这篇论文的要点，别弄丢了",
+          "content": "SDANet 要点：频谱动态注意力、多尺度残差、×2/×3/×4 三档放大。",
           "expectedAction": "retain",
           "expectedBank": "vault",
           "config": "$CONFIG:testrole",

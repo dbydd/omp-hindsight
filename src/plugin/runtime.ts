@@ -254,11 +254,21 @@ export class HindsightPluginRuntime {
    *
    * 服务端缺省的自动建库绕过抽取模板，所以这一步必须赶在第一次写入之前；
    * 单个 bank 对齐失败只记一条日志，其余 bank 与会话启动照常。
+   *
+   * 【门牌与服务端配置漂移问题说明 (T1-14)】：
+   * 此前服务端配置与插件门牌自报存在漂移（例如门牌报 maxTokens 1200 / recallPreferObservations true，
+   * 但服务端实际为 2048 / false）。这是由于历史实现中 alignBank 仅同步了 description，
+   * 服务端缺少 recallPreferObservations 与 recallMaxTokens 参数覆盖。
+   * 这里显式传入配置里的 recallPreferObservations 与 bank.recall.maxTokens，确保服务端与门牌严格一致。
    */
   async alignBanks(): Promise<void> {
     for (const bank of this.config.banks) {
       try {
-        await this.client.alignBank(bank.bankId, { description: bank.description });
+        await this.client.alignBank(bank.bankId, {
+          description: bank.description,
+          recallPreferObservations: this.config.recallPreferObservations,
+          recallMaxTokens: bank.recall.maxTokens,
+        });
       } catch (error) {
         logger?.warn("hindsight.bank.align_failed", {
           bank: bank.id,

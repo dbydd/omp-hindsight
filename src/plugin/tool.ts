@@ -14,11 +14,13 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { journalJudgmentUsage, resolveJudge } from "@oh-my-pi/pi-coding-agent/judgment";
 import { completeSimple, type JudgmentState, type Questions } from "@oh-my-pi/pi-ai";
 import { TOOL_PARAMETERS } from "../../ssot/spec.ts";
+import type { HindsightHttpClient } from "../core/client.ts";
 import type { DecomposedStep, DecomposerPort } from "../core/decomposer.ts";
 import { isRecord } from "../core/guards.ts";
 import { isWriteAction, type ExecutionEnv, type JudgeAnswer, type JudgePort } from "../core/judge.ts";
 import { executeToolInput, type ToolOutcome } from "../core/ops.ts";
 import { matchPath } from "../core/paths.ts";
+import type { NameLookupPort } from "../core/slots.ts";
 import type { HindsightConfig, HindsightToolInput, Receipt } from "../core/types.ts";
 import { describeDiscovery, getRuntime, loadConfig } from "./runtime.ts";
 
@@ -80,6 +82,7 @@ export function registerHindsightTool(pi: ExtensionAPI): void {
 
       const outcome = await executeToolInput(input, runtime.config, runtime.client, createJudgePort(ctx), env, {
         decompose: createDecomposerPort(pi, ctx, runtime.config),
+        nameLookup: createNameLookupPort(runtime.client),
         queue: runtime.queue,
       });
 
@@ -94,6 +97,7 @@ export function registerHindsightTool(pi: ExtensionAPI): void {
         status: outcome.status,
         actions: executed.map((action) => action.action),
         wrote: executed.some((action) => isWriteAction(action.action)),
+        failures: outcome.status === "ok" ? outcome.failures.length : undefined,
         hint: outcome.status === "hint" ? outcome.hint.scenario : undefined,
       });
       return reply(renderOutcome(outcome), outcome);
@@ -180,7 +184,8 @@ const DECOMPOSER_SYSTEM = [
   "你在为 hindsight 记忆工具解构一条输入，产出的是这个工具的操作意图，不是 shell 脚本。",
   '输出严格 JSON：{"steps":[{"command":"…","payload":null,"file":null,"target":null}]}',
   "- command：一步 hindsight 操作的自然语言意图，例如「查 retain 队列死锁的处理记录」「把这条结论记下来」。禁止出现 grep、git、ls、cat 等命令。",
-  "- payload：从原文剥离出来的正文，一字不改，没有就 null；只落在最后一步。",
+  "- payload：这一步要写入的正文，一字不改，没有就 null。同一句里并列出现多段各有载体的写入（例如「论文事实：……。我的心得：……」写进不同的库）时，每一步只带属于自己的那一段，绝不把整段原文复制到每一步。",
+  "- 只有确实无法归属到某一步的整段正文才落在最后一步；工具的 content/file 参数就是给这种整体载荷用的。",
   "- file：原文显式给出的本地文件路径，没有就 null。",
   "- target：原文显式给出的 hindsight:// 虚拟路径或 bank 短名，没有就 null；不要把自己编的路径放进来。",
   "只有一件事就给单步，最多 6 步。不要解释，不要 Markdown 围栏。",
@@ -269,6 +274,101 @@ function optionalText(value: unknown): string | null {
 }
 
 // ─────────────────────────────────────────────────────────────
+// 名称兜底端口：指令里只写了资产名时换成远端 id
+// ─────────────────────────────────────────────────────────────
+
+const CJK_NAME = /[\u3400-\u9fff\uf900-\ufaff]/;
+
+/** 中文名按原样比，拉丁名忽略大小写；空白先修剪，避免尾随空格把命中变成零。 */
+function sameAssetName(candidate: string, name: string): boolean {
+  const wanted = name.trim();
+  if (wanted.length === 0) return false;
+  const actual = candidate.trim();
+  return CJK_NAME.test(wanted) ? actual === wanted : actual.toLowerCase() === wanted.toLowerCase();
+}
+
+/** 同名候选的 id；0 个和多个都返回空数组，调用方据此拒绝猜测。 */
+function idsNamed<T>(
+  candidates: readonly T[],
+  name: string,
+  nameOf: (candidate: T) => string,
+  idOf: (candidate: T) => string | null | undefined,
+): string[] {
+  const ids: string[] = [];
+  for (const candidate of candidates) {
+    if (!sameAssetName(nameOf(candidate), name)) continue;
+    const id = idOf(candidate);
+    if (typeof id === "string" && id.length > 0) ids.push(id);
+  }
+  return ids;
+}
+
+function exactlyOne(ids: readonly string[]): string | null {
+  const only = ids.length === 1 ? ids[0] : undefined;
+  return only ?? null;
+}
+
+interface NamedTreeNode {
+  readonly id: string;
+  readonly name: string;
+  readonly kind?: string;
+  readonly children?: readonly NamedTreeNode[];
+}
+
+function pagesIn(nodes: readonly NamedTreeNode[]): NamedTreeNode[] {
+  const pages: NamedTreeNode[] = [];
+  for (const node of nodes) {
+    if (node.kind === "page") pages.push(node);
+    else pages.push(...pagesIn(node.children ?? []));
+  }
+  return pages;
+}
+
+/**
+ * 名称 → 远端 id 的兜底查询。
+ *
+ * judge 与槽位提取器拿到的目标常常只是资产名（「刷新心智模型「项目路线」」）；
+ * 这里用真实列表端点把它换成 id。同名多份时返回 null：猜一个 id 会把写入送到错误的
+ * 资产上，宁可让执行层报「无法确定」。
+ */
+export function createNameLookupPort(client: HindsightHttpClient): NameLookupPort {
+  return {
+    async resolveMentalModelId(bankId, name) {
+      const response = await client.listMentalModels(bankId, { detail: "metadata", limit: 100 });
+      return exactlyOne(
+        idsNamed(
+          response.items,
+          name,
+          (item) => item.name,
+          (item) => item.id,
+        ),
+      );
+    },
+
+    async resolveKnowledgePageId(bankId, name) {
+      const tree = await client.getKnowledgeBaseTree(bankId);
+      const fromTree = idsNamed(
+        pagesIn(tree.roots),
+        name,
+        (node) => node.name,
+        (node) => node.id,
+      );
+      // 树上同名多份就是歧义，不再用搜索把问题掩盖成「找到了一篇」。
+      if (fromTree.length > 0) return exactlyOne(fromTree);
+      const found = await client.searchKnowledgeBase(bankId, name, { limit: 10 });
+      return exactlyOne(
+        idsNamed(
+          found.results,
+          name,
+          (result) => result.name,
+          (result) => result.id,
+        ),
+      );
+    },
+  };
+}
+
+// ─────────────────────────────────────────────────────────────
 // 文本：回执与提示
 // ─────────────────────────────────────────────────────────────
 
@@ -298,6 +398,13 @@ function renderOutcome(outcome: ToolOutcome): string {
     }
     if (action.paths.length > 0) lines.push(`   Paths: ${action.paths.map((path) => `\`${path}\``).join(", ")}`);
     if (action.content !== null) lines.push("", action.content.trim(), "");
+  }
+  if (outcome.failures.length > 0) {
+    lines.push("", `Failed ${outcome.failures.length} step(s):`);
+    for (const failure of outcome.failures) {
+      lines.push(`- ${failure.diagnosis}`);
+      lines.push(`  Suggested action: ${failure.suggestedAction}`);
+    }
   }
   return lines.join("\n");
 }

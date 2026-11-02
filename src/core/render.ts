@@ -29,6 +29,70 @@ export function renderAttachments(text: string, bank: string): string {
 // 文档与分块
 // ─────────────────────────────────────────────────────────────
 
+export interface DocumentListEntry {
+  readonly id: string;
+  readonly text_length?: number | null;
+  readonly memory_unit_count?: number | null;
+  readonly created_at?: string | null;
+  readonly updated_at?: string | null;
+  readonly tags?: readonly string[] | null;
+}
+
+export interface DocumentListRenderInput {
+  readonly bank: string;
+  readonly items: readonly DocumentListEntry[];
+  readonly total: number;
+  readonly limit: number;
+  readonly offset: number;
+  readonly q?: string;
+}
+
+export function renderDocumentList(input: DocumentListRenderInput): string {
+  const { bank, items, total, limit, offset, q } = input;
+  const lines: string[] = [
+    `# Documents: ${bank}`,
+    "",
+    `- Total: ${total}`,
+    `- Showing: ${items.length} (offset ${offset}, limit ${limit})`,
+  ];
+  if (q !== undefined && q.length > 0) {
+    lines.push(`- Query: ${q}`);
+  }
+  lines.push(
+    "- Note: Hindsight 服务端目前不提供跨 bank 的附件全局索引；图片与附件需通过文档内的图片占位符或引用路径查看。",
+    "",
+  );
+
+  if (items.length === 0) {
+    lines.push("_No documents found._");
+  } else {
+    for (const item of items) {
+      const path = buildPath(":bank/documents/:doc", { bank, doc: item.id });
+      const chars = item.text_length ?? 0;
+      const units = item.memory_unit_count ?? 0;
+      const unitWord = units === 1 ? "memory unit" : "memory units";
+      const created = item.created_at ?? "—";
+      const updated = item.updated_at ?? "—";
+      const meta = `${chars} chars · ${units} ${unitWord} · created ${created} · updated ${updated}`;
+      const tagsStr = item.tags && item.tags.length > 0 ? ` · tags: [${item.tags.join(", ")}]` : "";
+      lines.push(`- \`${item.id}\``, `  - 门牌：\`${path}\``, `  - ${meta}${tagsStr}`);
+    }
+  }
+
+  if (offset + limit < total) {
+    const nextOffset = offset + limit;
+    const nextQuery = new URLSearchParams();
+    if (q !== undefined && q.length > 0) nextQuery.set("q", q);
+    nextQuery.set("limit", String(limit));
+    nextQuery.set("offset", String(nextOffset));
+    const nextPath = `${buildPath(":bank/documents", { bank })}?${nextQuery.toString()}`;
+    lines.push("", `[Next Page](${nextPath}) (offset ${nextOffset})`);
+  }
+
+  lines.push("");
+  return lines.join("\n");
+}
+
 export interface DocumentRenderInput {
   readonly bank: string;
   readonly document: DocumentResponse;
@@ -213,12 +277,46 @@ function knowledgePageBody(page: KnowledgePageResponse): string {
   return "_This page has no content yet; initial build in progress._";
 }
 
+/**
+ * 描述心智模型的刷新与内容状态（人机友好展示）。
+ * 区分：
+ * 1. 内容已生成（last_refreshed_at 有值）+ 解释 is_stale 是否代表等待下次刷新；
+ * 2. 空正文：尚未刷新 / 刷新完成但无提取内容 / 刷新失败（last_refresh_failed_at 有值）/ 知识页后台模型尚未完成构建。
+ */
+export function describeMentalModelState(model: MentalModelResponse): string {
+  const hasContent = model.content !== null && model.content !== undefined && model.content.trim().length > 0;
+
+  if (hasContent) {
+    const refreshedAt = model.last_refreshed_at ?? "未知时间";
+    const status = `内容已生成（最近刷新 ${refreshedAt}）`;
+    if (model.is_stale === true) {
+      return `${status} — 库内有新记忆等待下次刷新整合，当前呈现已归纳版本，非刷新失败。`;
+    }
+    return `${status} — 模型状态新鲜。`;
+  }
+
+  if (model.last_refresh_failed_at !== null && model.last_refresh_failed_at !== undefined) {
+    return `刷新失败（失败时间 ${model.last_refresh_failed_at}）；当前无内容，可通过 refresh 重新触发。`;
+  }
+
+  if (model.is_knowledge_page === true && (model.last_refreshed_at === null || model.last_refreshed_at === undefined)) {
+    return "知识页后台模型尚未完成构建。";
+  }
+
+  if (model.last_refreshed_at !== null && model.last_refreshed_at !== undefined) {
+    return `已完成刷新（${model.last_refreshed_at}），但在当前取材范围与过滤条件下未提取到有效内容。`;
+  }
+
+  return "_This mental model has no content yet; no refresh has finished._";
+}
+
 export interface MentalModelRenderInput {
   readonly model: MentalModelResponse;
 }
 
 export function renderMentalModel(input: MentalModelRenderInput): string {
   const { model } = input;
+  const stateDescription = describeMentalModelState(model);
   const frontmatter = yamlFrontmatter([
     ["id", model.id],
     ["name", model.name],
@@ -226,11 +324,12 @@ export function renderMentalModel(input: MentalModelRenderInput): string {
     ["tags", model.tags ?? []],
     ["updated_at", model.last_refreshed_at ?? null],
     ["is_stale", model.is_stale ?? false],
+    ["status_description", stateDescription],
   ]);
   const body =
     model.content !== null && model.content !== undefined && model.content.trim().length > 0
       ? model.content
-      : "_This mental model has no content yet; no refresh has finished._";
+      : stateDescription;
   return `${frontmatter}\n${body.trimEnd()}\n`;
 }
 

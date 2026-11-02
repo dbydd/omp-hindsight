@@ -15,12 +15,16 @@ import {
   type ProtocolHandler,
   type ResolveContext,
 } from "@oh-my-pi/pi-coding-agent/internal-urls";
+import type { MentalModelResponse } from "@vectorize-io/hindsight-client";
+import { HindsightRequestError } from "../core/client.ts";
 import { maskSecret, readApiKey } from "../core/config.ts";
 import { buildPath, matchPath, type MatchedPath } from "../core/paths.ts";
 import {
+  describeMentalModelState,
   renderChunk,
   renderChunkList,
   renderDocument,
+  renderDocumentList,
   renderKnowledgePage,
   renderMemory,
   renderMentalModel,
@@ -84,6 +88,14 @@ async function resolveHindsightUrl(url: InternalUrl, context?: ResolveContext): 
   if (runtime === undefined) {
     const cwd = context?.cwd ?? process.cwd();
     return resource(url, describeDiscovery(await loadConfig(cwd, null), cwd));
+  }
+
+  // 适配层本地引导路由：`/attachments` 没有服务端列表端点，SSOT 也没有这条模式。
+  const guidance = matchGuidanceRoute(virtualPathOf(url));
+  if (guidance !== null) {
+    const request = guidanceRequestFor(url, guidance.bank, runtime, context);
+    if (bankOf(request) === undefined) return unknownBank(request);
+    return guidance.view(request);
   }
 
   const matched = matchPath(virtualPathOf(url).replace(LEGACY_KNOWLEDGE_BASE, "$1/knowledge-base"));
@@ -152,6 +164,43 @@ function relativePathOf(url: InternalUrl): string {
 
 function aliasPathOf(url: InternalUrl): string {
   return `${SCHEME}://${relativePathOf(url)}`;
+}
+
+interface GuidanceRoute {
+  readonly bank: string;
+  readonly view: View;
+}
+
+/** SSOT 之外只在适配层存在的引导路由；不进 spec.ts，避免把"没有端点"写成路由。 */
+const GUIDANCE_ROUTES: ReadonlyArray<readonly [RegExp, View]> = [
+  [/^hindsight:\/\/([^/?#]+)\/attachments\/?(?:\?.*)?$/, attachmentsGuidanceView],
+];
+
+function matchGuidanceRoute(virtualPath: string): GuidanceRoute | null {
+  for (const [pattern, view] of GUIDANCE_ROUTES) {
+    const match = pattern.exec(virtualPath);
+    const bank = match?.[1];
+    if (bank !== undefined) return { bank, view };
+  }
+  return null;
+}
+
+function guidanceRequestFor(
+  url: InternalUrl,
+  bank: string,
+  runtime: HindsightPluginRuntime,
+  context: ResolveContext | undefined,
+): ViewRequest {
+  const query: Record<string, string> = {};
+  for (const [name, value] of url.searchParams) query[name] = value;
+  return {
+    url,
+    runtime,
+    context,
+    path: `${SCHEME}://${bank}/attachments`,
+    params: { bank },
+    query,
+  };
 }
 
 function requestFor(
@@ -250,12 +299,53 @@ function notFound(request: ViewRequest, what: string, hint: string): InternalRes
   );
 }
 
+function invalidId(request: ViewRequest, detail: string, hint: string): InternalResource {
+  return resource(
+    request.url,
+    ["# 标识符格式不对", "", `- 目标：\`${request.path}\``, `- 原因：${detail}`, `- 下一步：${hint}`].join("\n"),
+  );
+}
+
+/** 包装叶视图的 HindsightRequestError：404 → notFound 友好页；400 → 标识符格式不对引导页 */
+async function leafFetch<T>(request: ViewRequest, fetcher: () => Promise<T>): Promise<T | InternalResource> {
+  try {
+    return await fetcher();
+  } catch (error) {
+    if (error instanceof HindsightRequestError) {
+      if (error.statusCode === 404) {
+        return notFound(
+          request,
+          `服务端未找到目标实体（404 Not Found）：${error.message}`,
+          `请检查标识符是否正确，或读相关列表目录核对有效 ID。`,
+        );
+      }
+      if (error.statusCode === 400) {
+        return invalidId(
+          request,
+          `请求的标识符格式不合法（400 Bad Request）：${error.message}`,
+          `Hindsight 的多数实体使用标准 UUID 或合规的相对路径命名，请确认门牌中的 ID 片段无多余字符。`,
+        );
+      }
+    }
+    throw error;
+  }
+}
+
+/**
+ * 叶取数可能返回实体也可能返回错误页。不能用 `"content" in value` 区分：
+ * 心智模型响应本身就有 `content` 字段，会被误判成资源页。
+ */
+function isResource(value: unknown): value is InternalResource {
+  return typeof value === "object" && value !== null && "contentType" in value && "url" in value;
+}
+
 // ─────────────────────────────────────────────────────────────
 // 各路由的视图
 // ─────────────────────────────────────────────────────────────
 
 const ROUTE_VIEWS: Readonly<Record<string, View>> = {
   "": rootView,
+  ":bank/documents": documentIndex,
   ":bank/documents/:doc": documentLeaf,
   ":bank/documents/:doc/chunks": chunkIndex,
   ":bank/documents/:doc/chunks/:n": chunkByIndex,
@@ -290,10 +380,6 @@ interface GapSpec {
 
 /** core 客户端没有封装的端点：给出端点与可用替代，适配层不另建传输（契约 §一）。 */
 const GAP_VIEWS: Readonly<Record<string, GapSpec>> = {
-  ":bank/documents": {
-    endpoint: "GET /banks/:bank/documents",
-    alternative: "已知文档 id 时直接读叶 `hindsight://<bank>/documents/<id>`；找 id 用 `hindsight` 工具的 recall。",
-  },
   ":bank/observations/scopes": {
     endpoint: "GET /banks/:bank/observations/scopes",
     alternative: "观察的作用域由 bank 配置决定，见 `hindsight://plugin/config` 的 `banks[].retain.scopes`。",
@@ -347,10 +433,10 @@ async function rootView(request: ViewRequest): Promise<InternalResource> {
   for (const bank of runtime.config.banks) {
     lines.push(
       `- \`${bank.id}\`（bankId \`${bank.bankId}\`，${bank.access}，retain ${bank.retain.mode}）`,
+      `  - 文档列表：\`${buildPath(":bank/documents", { bank: bank.id })}\``,
       `  - 知识库：\`${buildPath(":bank/knowledge-base", { bank: bank.id })}\``,
       `  - 心智模型：\`${buildPath(":bank/mental-models", { bank: bank.id })}\``,
       `  - 异步任务：\`${buildPath(":bank/operations", { bank: bank.id })}\``,
-      `  - 文档叶（已知 id 直读）：\`${buildPath(":bank/documents", { bank: bank.id })}/<id>\``,
       `  - 召回（带查询）：\`${buildPath(":bank/facts", { bank: bank.id })}?q=<关键词>\``,
     );
   }
@@ -362,7 +448,9 @@ async function documentLeaf(request: ViewRequest): Promise<InternalResource> {
   const bank = bankOf(request);
   if (bank === undefined) return unknownBank(request);
   const documentId = request.params.doc ?? "";
-  const document = await request.runtime.client.getDocument(bank.bankId, documentId);
+  const fetched = await leafFetch(request, () => request.runtime.client.getDocument(bank.bankId, documentId));
+  if (isResource(fetched)) return fetched;
+  const document = fetched;
   if (document === null) {
     return notFound(
       request,
@@ -374,11 +462,44 @@ async function documentLeaf(request: ViewRequest): Promise<InternalResource> {
   return resource(request.url, renderDocument({ bank: bank.id, document, localFile: null }));
 }
 
+async function documentIndex(request: ViewRequest): Promise<InternalResource> {
+  const bank = bankOf(request);
+  if (bank === undefined) return unknownBank(request);
+
+  const rawLimit = Number(request.query.limit);
+  const limit = Number.isInteger(rawLimit) ? Math.max(1, Math.min(200, rawLimit)) : 50;
+  const rawOffset = Number(request.query.offset);
+  const offset = Number.isInteger(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
+  const q = request.query.q !== undefined && request.query.q.trim().length > 0 ? request.query.q.trim() : undefined;
+
+  const fetched = await leafFetch(request, () =>
+    request.runtime.client.listDocuments(bank.bankId, { q, limit, offset }),
+  );
+  if (isResource(fetched)) return fetched;
+  const page = fetched;
+
+  return resource(
+    request.url,
+    renderDocumentList({
+      bank: bank.id,
+      items: page.items,
+      total: page.total,
+      limit: page.limit,
+      offset: page.offset,
+      q,
+    }),
+  );
+}
+
 async function chunkIndex(request: ViewRequest): Promise<InternalResource> {
   const bank = bankOf(request);
   if (bank === undefined) return unknownBank(request);
   const documentId = request.params.doc ?? "";
-  const page = await request.runtime.client.listDocumentChunks(bank.bankId, documentId, { limit: 100 });
+  const fetched = await leafFetch(request, () =>
+    request.runtime.client.listDocumentChunks(bank.bankId, documentId, { limit: 100 }),
+  );
+  if (isResource(fetched)) return fetched;
+  const page = fetched;
   return resource(
     request.url,
     renderChunkList({ bank: bank.id, documentId, chunks: page.items, total: page.total }),
@@ -394,7 +515,11 @@ async function chunkByIndex(request: ViewRequest): Promise<InternalResource> {
   if (!Number.isInteger(index)) {
     return notFound(request, "分块序号必须是整数。", "形如 `…/documents/<id>/chunks/0`。");
   }
-  const page = await request.runtime.client.listDocumentChunks(bank.bankId, documentId, { limit: 200 });
+  const fetched = await leafFetch(request, () =>
+    request.runtime.client.listDocumentChunks(bank.bankId, documentId, { limit: 200 }),
+  );
+  if (isResource(fetched)) return fetched;
+  const page = fetched;
   const chunk = page.items.find((item) => item.chunk_index === index);
   if (chunk === undefined) {
     return notFound(
@@ -409,7 +534,9 @@ async function chunkByIndex(request: ViewRequest): Promise<InternalResource> {
 async function chunkLeaf(request: ViewRequest): Promise<InternalResource> {
   const bank = bankOf(request);
   if (bank === undefined) return unknownBank(request);
-  const chunk = await request.runtime.client.getChunk(request.params.id ?? "");
+  const fetched = await leafFetch(request, () => request.runtime.client.getChunk(request.params.id ?? ""));
+  if (isResource(fetched)) return fetched;
+  const chunk = fetched;
   return resource(request.url, renderChunk({ bank: bank.id, chunk }));
 }
 
@@ -448,6 +575,8 @@ async function recallListing(
   const response = await request.runtime.client.recall(bank.bankId, query, {
     types,
     maxTokens: bank.recall.maxTokens,
+    // 与 auto-recall 用同一个全局解析值，避免门牌召回与服务端实际行为再分叉。
+    preferObservations: request.runtime.config.recallPreferObservations,
     tags: bank.recall.tags.length === 0 ? undefined : [...bank.recall.tags],
   });
   const lines = [
@@ -470,7 +599,9 @@ async function factLeaf(request: ViewRequest): Promise<InternalResource> {
   const bank = bankOf(request);
   if (bank === undefined) return unknownBank(request);
   const memoryId = request.params.id ?? "";
-  const memory = await request.runtime.client.getMemory(bank.bankId, memoryId);
+  const fetched = await leafFetch(request, () => request.runtime.client.getMemory(bank.bankId, memoryId));
+  if (isResource(fetched)) return fetched;
+  const memory = fetched;
   if (memory === null) {
     return notFound(
       request,
@@ -522,7 +653,11 @@ async function knowledgeTreeView(request: ViewRequest): Promise<InternalResource
 async function knowledgePageView(request: ViewRequest): Promise<InternalResource> {
   const bank = bankOf(request);
   if (bank === undefined) return unknownBank(request);
-  const page = await request.runtime.client.getKnowledgePage(bank.bankId, request.params.id ?? "");
+  const fetched = await leafFetch(request, () =>
+    request.runtime.client.getKnowledgePage(bank.bankId, request.params.id ?? ""),
+  );
+  if (isResource(fetched)) return fetched;
+  const page = fetched;
   return resource(request.url, renderKnowledgePage({ page }));
 }
 
@@ -530,31 +665,73 @@ async function mentalModelIndex(request: ViewRequest): Promise<InternalResource>
   const bank = bankOf(request);
   if (bank === undefined) return unknownBank(request);
   const list = await request.runtime.client.listMentalModels(bank.bankId, { limit: 100 });
+
+  const showKnowledgePages = request.query["knowledge-pages"] === "1";
+  const normalModels: typeof list.items = [];
+  const pageBackingModels: typeof list.items = [];
+
+  for (const model of list.items) {
+    if (model.is_knowledge_page === true) {
+      pageBackingModels.push(model);
+    } else {
+      normalModels.push(model);
+    }
+  }
+
   const lines = [
     `# 心智模型：${bank.id}`,
     "",
-    `- 列出：${list.items.length} / ${list.total}`,
-    "",
+    `- 列出：${normalModels.length} 个独立心智模型 / 总计 ${list.total} 个模型`,
   ];
-  if (list.items.length === 0) lines.push("_没有心智模型：创建用 `hindsight` 工具的 mm.create。_");
-  for (const model of list.items) {
-    const path = buildPath(":bank/mental-models/:id", { bank: bank.id, id: model.id });
-    const stale = model.is_stale === true ? "（待刷新）" : "";
-    lines.push(`- \`${model.id}\` ${model.name}${stale}`, `  - 门牌：\`${path}\``);
-    if (model.source_query !== null && model.source_query !== undefined) {
-      lines.push(`  - 取材问题：${preview(model.source_query, 160)}`);
-    }
-    if (model.tags !== undefined && model.tags.length > 0) {
-      lines.push(`  - 标签：${model.tags.join("、")}`);
+
+  if (pageBackingModels.length > 0) {
+    if (!showKnowledgePages) {
+      lines.push(
+        `- 知识页后台模型：${pageBackingModels.length} 个已折叠（避免作为普通心智模型混淆；追加 \`?knowledge-pages=1\` 查看）`,
+      );
     }
   }
+  lines.push("");
+
+  if (normalModels.length === 0) {
+    lines.push("_没有独立心智模型：创建用 `hindsight` 工具的 mm.create。_");
+  } else {
+    for (const model of normalModels) {
+      renderModelEntry(lines, bank.id, model);
+    }
+  }
+
+  if (showKnowledgePages && pageBackingModels.length > 0) {
+    lines.push("", "## 知识页后台模型（不作为独立心智模型使用）", "");
+    for (const model of pageBackingModels) {
+      renderModelEntry(lines, bank.id, model);
+    }
+  }
+
   return resource(request.url, lines.join("\n"));
+}
+
+function renderModelEntry(lines: string[], bankId: string, model: MentalModelResponse): void {
+  const path = buildPath(":bank/mental-models/:id", { bank: bankId, id: model.id });
+  const stale = model.is_stale === true ? "（待刷新）" : "";
+  const state = describeMentalModelState(model);
+  lines.push(`- \`${model.id}\` ${model.name}${stale}`, `  - 门牌：\`${path}\``, `  - 状态：${state}`);
+  if (model.source_query !== null && model.source_query !== undefined) {
+    lines.push(`  - 取材问题：${preview(model.source_query, 160)}`);
+  }
+  if (model.tags !== undefined && model.tags.length > 0) {
+    lines.push(`  - 标签：${model.tags.join("、")}`);
+  }
 }
 
 async function mentalModelLeaf(request: ViewRequest): Promise<InternalResource> {
   const bank = bankOf(request);
   if (bank === undefined) return unknownBank(request);
-  const model = await request.runtime.client.getMentalModel(bank.bankId, request.params.id ?? "");
+  const fetched = await leafFetch(request, () =>
+    request.runtime.client.getMentalModel(bank.bankId, request.params.id ?? ""),
+  );
+  if (isResource(fetched)) return fetched;
+  const model = fetched;
   return resource(request.url, renderMentalModel({ model }));
 }
 
@@ -583,12 +760,16 @@ async function operationIndex(request: ViewRequest): Promise<InternalResource> {
 async function operationLeaf(request: ViewRequest): Promise<InternalResource> {
   const bank = bankOf(request);
   if (bank === undefined) return unknownBank(request);
-  const operation = await request.runtime.client.getOperation(bank.bankId, request.params.id ?? "");
+  const fetched = await leafFetch(request, () =>
+    request.runtime.client.getOperation(bank.bankId, request.params.id ?? ""),
+  );
+  if (isResource(fetched)) return fetched;
+  const operation = fetched;
   return resource(request.url, renderOperation({ bank: bank.id, operation }));
 }
 
 /**
- * 附件按契约 §二.3 只渲染元信息与门牌：core 没有附件字节接口，二进制直出留待后续裁定。
+ * 附件叶（T2-12 友好引导）：明确区分"图像未入库"与"图像已存在但无回答"。
  */
 async function attachmentLeaf(request: ViewRequest): Promise<InternalResource> {
   const bank = bankOf(request);
@@ -602,7 +783,33 @@ async function attachmentLeaf(request: ViewRequest): Promise<InternalResource> {
       `- Bank: \`${bank.id}\``,
       `- 门牌：\`${request.path}\``,
       `- 服务端端点：\`GET /banks/:bank/attachments/:id\``,
-      `- 说明：附件字节直出尚未接入 core 客户端；引用处见包含该附件占位符的文档叶。`,
+      "",
+      `## 排查与引导`,
+      "",
+      `1. **图像未入库**：如果文档原稿中的图片没有随文本一块 retain（例如原 Markdown 未包含标准图片引用语法 \`![alt](path)\`，或图片文件未单独上传），则该附件在服务端不存在。请使用 \`retain\` 重新提交包含相对图片引用的 Markdown 文档或对应图片文件。`,
+      `2. **图像已存在但问答为空**：若附件确实已入库但针对图像的问答（VLM/Vision reflect）返回空，请检查调用时的 intent 是否提供了具体的提问，或该 bank 是否配置了视觉多模态能力。`,
+      `3. **附件字节读取**：目前 core 客户端未封装附件二进制直出接口，当前门牌仅提供元数据与引用追踪；如需查看原图，请参考引用此附件的文档叶。`,
+    ].join("\n"),
+  );
+}
+
+/** 适配层本地引导路由：针对 :bank/attachments 提示无全局附件端点 */
+async function attachmentsGuidanceView(request: ViewRequest): Promise<InternalResource> {
+  const bank = bankOf(request);
+  if (bank === undefined) return unknownBank(request);
+  return resource(
+    request.url,
+    [
+      `# 附件指引：${bank.id}`,
+      "",
+      `- 目标：\`${request.path}\``,
+      `- 说明：Hindsight 服务端目前**不提供**跨 bank 的附件列表端点（GET /banks/:bank/attachments 不存在）。`,
+      "",
+      `## 如何找到并使用附件`,
+      "",
+      `1. **通过文档查看**：附件作为 Markdown 文档的多媒体附庸存在。读 \`hindsight://${bank.id}/documents/<docId>\`，正文里的 \`⟦hs-att:<id>⟧\` 或图片引用会指向具体的附件门牌 \`hindsight://${bank.id}/attachments/<id>.png\`。`,
+      `2. **图像未入库处理**：入库 Markdown 论文或笔记时，确保正文内有合法的 Markdown 图片语法或通过多媒体通道入库。若此前入库时附件数为 0，需重新 retain 包含引用的文本或文件。`,
+      `3. **区分状态**：若查询某图片内容得到空回复，请先确认文档中是否存在该附件门牌，避免在未入库的图像上反复重试。`,
     ].join("\n"),
   );
 }
@@ -783,6 +990,7 @@ async function expandMentalModels(request: ViewRequest): Promise<string[]> {
   try {
     const list = await request.runtime.client.listMentalModels(bank.bankId, { limit: ENUMERATE_LIMIT });
     return list.items
+      .filter((model) => model.is_knowledge_page !== true)
       .slice(0, ENUMERATE_LIMIT)
       .map((model) => buildPath(":bank/mental-models/:id", { bank: bank.id, id: model.id }));
   } catch {

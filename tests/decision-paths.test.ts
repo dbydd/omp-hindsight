@@ -20,6 +20,7 @@ import { parseConfig } from "../src/core/config.ts";
 import { inputAsStep, type DecomposedStep } from "../src/core/decomposer.ts";
 import {
   MAX_AMBIGUOUS_CONFIDENCE,
+  QUESTION_COPY,
   decideAction,
   type ChoiceQuestion,
   type ExecutionEnv,
@@ -169,10 +170,22 @@ function defaultMethods(): Record<string, (args: readonly unknown[]) => unknown>
         },
       ],
     }),
-    getOperation: () => ({
-      operation_id: "op-1",
-      status: "completed",
-      operation_type: "retain",
+    getOperation: (args) => {
+      const id = String(args[1] ?? "op-1");
+      if (id === "op-404") return { operation_id: id, status: "not_found" };
+      // 取消测试针对排队/执行中的任务：可取消才有意义，已完成任务走的是删除文档的回滚路径。
+      return { operation_id: id, status: "processing", operation_type: "retain" };
+    },
+    operationDocumentIds: (args) => {
+      const id = String(args[1] ?? "op-1");
+      return id === "op-1" ? ["doc-1"] : [];
+    },
+    deleteDocument: () => undefined,
+    listDocuments: () => ({
+      items: [{ id: "doc-1", text_length: 12, memory_unit_count: 1 }],
+      total: 1,
+      limit: 50,
+      offset: 0,
     }),
     cancelOperation: () => ({ success: true, message: "cancelled" }),
   };
@@ -430,76 +443,6 @@ function releaseSlot(): void {
   }
 }
 
-const TEST_OVERRIDES = {
-  intent_cardinality: {
-    instructions: "这是判定的第一道门。判断这条输入是一条可以直接执行的完整指令（atomic），还是把多件事挤在了一句话里、需要先拆开再逐件执行（composite）。注意：intent 与 content/file 是分离的，正文不会黏在指令里；只有指令句本身包含多个依序操作时才算 composite。",
-    criteria: {
-      atomic: "指令句只有一个操作诉求，主语和宾语都指向同一件事。即使 content 里有长正文也不算 composite——那是分离出去的载荷。",
-      composite: "指令句里塞了两个以上依序或并列的操作：「先…然后…」「A 和 B 都…」、分号并列的多条诉求。切开后每一段才是单步。",
-    },
-  },
-  action_family: {
-    instructions:
-      "你在为 omp 的 Hindsight 记忆插件做意图分类。逐条阅读下面的解释，理解每个选项为什么存在、它们之间的边界在哪里，然后归类。\n背景：memory_query 和 memory_retain 操作的是散装的记忆事实（facts）；knowledge_base 和 mental_model 操作的是结构化资产（页面/目录/模型）。\n这条边界很重要：用户说「记录一条心得」是在存事实（memory_retain）；说「心智模型「X」：…」是在管理结构化资产（mental_model）——后者的标志是句首点明了资产名。\n关键区分：问句和对比句（为什么/对比/评估/总结/综述/解释一下/比较）都是 memory_query，不是 memory_retain 也不是 mental_model——它们在向记忆库提问，不是在陈述结论。只有当句子真的在陈述或保存一条结论时才选 memory_retain。",
-    criteria: {
-      knowledge_base: "操作知识库结构化资产：知识页（page）、目录树/文件夹（folder）。选它的信号是用户想「维护一篇可浏览的页面」——建页、改页、删页、翻目录树、搜页面。容易混淆点：只是把内容存起来不叫知识页操作，必须明确针对某个页面或目录。",
-      mental_model: "操作心智模型：长期回答某个问题的认知资产，由系统自动归纳维护。选它的信号是句首点明「心智模型/mental model」这个实体且是创建/管理动作，即使后半句出现「记录」「沉淀」等动词。容易混淆点：问「心智模型相关的问题」「对比方案」是在查事实，选 memory_query。「判断意图所用的角色」「意图分类的角色」这类查询是在查配置事实，也选 memory_query。",
-      operation_view: "查看或取消后台异步任务（operation）：retain 提交后系统异步抽取事实，用户想看进度/列表/取消任务时选这里。信号词：任务、积压、进度、取消。",
-      memory_retain: "往记忆库存一条散装事实：用户正在陈述或保存一条结论、心得、规范、经验。信号词：记住、记一下、保存、沉淀、写进记忆、别弄丢了。包括「论文精读结论」「判断卡」这类口语称呼。注意：问句（为什么/怎么）不是在陈述结论！",
-      memory_query: "从记忆库检索已存的事实：召回（recall）、回忆、查找、问「之前有没有…」「当时…是什么」「…用的角色叫什么」。也包括所有需要系统作答的开放问题：为什么（因果）、对比/比较（差异）、评估/权衡（利弊）、总结/综述（归纳）、解释一下（原理）。容易混淆点：查询代码目录名/路径、算法模型选型（embedding 模型）虽然像知识库话题，但本质是查事实。",
-      none: "这句话跟记忆库无关：寒暄、问天气、让模型改代码/重构函数。判断依据：这句话的受益者是用户当下的对话，而不是未来的记忆检索。",
-    },
-  },
-  retrieval_depth: {
-    instructions: "已确认这是在向记忆库提问。现在判断用户期望的作答方式：是查一条具体的事实（recall），还是需要系统综合多篇记忆给出一份带依据的分析（reflect）。",
-    criteria: {
-      recall: "答案是单点事实：一个参数值、一条命令、一个结论、一个清单项。用户不需要论证过程，只要那个值。例如「当时选的什么模型」「重试上限是多少」。「查一下…的结论」没有对比对象时也是 recall——问的是一条已存结论，不是要新的分析。",
-      reflect: "答案需要综合多条记忆才能成立：比较两方案的差异与取舍、解释一个决策的原因、评估设计的利弊、综述某个主题的全貌。特征是问句里出现了对比对象、因果追问或「综合/总结/评估」这类归纳动词。",
-    },
-  },
-  retain_source: {
-    instructions: "已确认用户要把一条结论存进记忆。现在判断这条内容的载体：是直接写在指令句里，还是指向一个外部文件，还是就是刚才这段对话本身。",
-    criteria: {
-      inline: "要记的结论就写在 intent 或 content 里，拿来即用，不需要再找别处。",
-      reference: "结论在某个外部文件（file 参数指向）或某次工具产出里，指令只是说「把那份东西存起来」。",
-      session: "用户没有给具体内容，而是说「把刚才讨论的…记下来」——内容要从当前会话历史里取。",
-    },
-  },
-  knowledge_base_action: {
-    instructions: "已确认用户在操作知识库的结构化资产。现在判断具体动作：先看意图动词（浏览/搜索/读/建/改/删），再结合目标是否存在（创建要求目标不存在，更新/删除要求目标已存在）。",
-    criteria: {
-      tree: "用户想看知识库的整体结构：目录树、大纲、层级、有哪些文件夹。特征是「给我看看/列出/浏览」，不针对某一篇具体页面。",
-      search: "用户想按关键词找页面，但不知道具体是哪一篇。特征是「搜/查/找/有哪些…的页面」，输出是清单而非正文。",
-      get: "用户想读某一篇已知页面的完整正文。特征是「打开/读一下/看看内容」，通常已点名页面或已有 id。",
-      page_create: "用户要新建一篇此前不存在的页面。特征是「新建/创建」+ 页面标题。",
-      page_update: "用户要改一篇已有页面的标题、正文、归属或标签。特征是「更新/修改/补充」。",
-      page_delete: "用户要删除一篇已有页面（连同子树）。特征是「删除/移除/删掉」。",
-      folder_create: "用户要新建一个用于分类的文件夹或目录。特征是「建目录/建文件夹」，不是页面。",
-    },
-  },
-  mental_model_action: {
-    instructions: "已确认用户在管理心智模型资产。现在判断具体动作：注意心智模型由系统自动归纳，refresh 是手动触发重新归纳。",
-    criteria: {
-      list: "用户想看有哪些心智模型：清单、元数据。特征是「列出/有哪些」。",
-      get: "用户想读某个心智模型的正文与支撑事实。特征是「读一下/查看…的正文」，已点名模型。",
-      create: "用户要登记一个新的心智模型。特征是「新建/创建/登记」+ 模型名。",
-      refresh: "用户要手动触发某个模型按最新记忆重新归纳。特征是「刷新/重新归纳」。",
-      delete: "用户要删除某个心智模型。特征是「删除/注销/删掉」。",
-    },
-  },
-  operation_action: {
-    instructions: "已确认用户在查看或管理后台异步任务。现在判断具体动作：list 看清单、get 查单个、cancel 中止。",
-    criteria: {
-      list: "用户想看操作列表或积压概况，不针对某一个任务。特征是「列出/有哪些/积压了多少/哪些失败了」。",
-      get: "用户想查某个具体任务的状态、进度或失败原因。特征是带 op-xxx 编号或单指某个任务。",
-      cancel: "用户要中止一个任务。特征是「取消/撤销/终止」。",
-    },
-  },
-  target_bank: {
-    instructions: "已确认要执行的动作，现在选择目标记忆库。依据是每个 bank 的 description 职责描述与这条指令的语义匹配度：主知识库存论文结论与设计知识，agent 工作记忆库存会话决策与调试发现，归档库存已冻结资料。",
-    criteria: {},
-  },
-};
 
 async function callSystemOne(
   state: JudgeState,
@@ -650,7 +593,7 @@ async function verifySample(sample: Sample): Promise<void> {
   const captures: Capture[] = [];
   const judge = systemOneJudge({ captures, familyConfidence: sample.familyConfidence });
 
-  const decision = await decideAction(step, config.banks, env, judge, TEST_OVERRIDES);
+  const decision = await decideAction(step, config.banks, env, judge, QUESTION_COPY);
 
   if (sample.expectedUnresolved !== undefined) {
     expect(decision.status).toBe("unresolved");
@@ -675,7 +618,7 @@ async function verifySample(sample: Sample): Promise<void> {
   });
   const outcome = await executeToolInput(input, config, client, judge, env, {
     extractSlots: slots,
-    judgeOverrides: TEST_OVERRIDES,
+    judgeOverrides: QUESTION_COPY,
   });
 
   if (sample.expectedHint !== undefined) {
@@ -685,8 +628,8 @@ async function verifySample(sample: Sample): Promise<void> {
     // 单步样例里提示必须发生在任何副作用之前。
     expect(outcome.completed).toEqual([]);
     if (sample.expectedHint === "not_found") {
-      // 执行阶段才发现目标不存在：请求已经发出去了一次，只是没有成功。
-      expect(calls.map((call) => call.method)).toEqual(["cancelOperation"]);
+      // 取消前先读任务状态：目标在这一次只读探测里就被判为不存在，不会再发取消。
+      expect(calls.map((call) => call.method)).toEqual(["getOperation"]);
     } else {
       expect(calls).toEqual([]);
     }

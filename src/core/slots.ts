@@ -1,20 +1,19 @@
 /**
  * 参数物化：把「动作 + 原子步骤」变成客户端能直接吃的参数。
  *
- * 载入顺序固定，确定性优先（docs/02 §八）：
- * 1. `file` → 直接读物理文件字节，零 Token、零转义；
- * 2. `payload` → 原样使用；
- * 3. 只有 `command` → 先从 `target` 路径里取 id，再由槽位提取器返回字符区间，
- *    代码自己做切片。模型只指位置，正文永远不经过模型。
+ * 载荷顺序固定，确定性优先（docs/02 §八）：
+ * 1. `file` → 按文件魔数解析成文本、图像或文档块，零 Token、零转义；
+ * 2. `payload` → 原样使用（同样解析其中的图片引用）；
+ * 3. 只有 `command` → 先由槽位提取器切出内容，切不出来就报缺正文。
  *
  * 缺槽位时返回 `incomplete`，由执行层转成带修复模板的提示，不猜、不补默认值。
  */
 
-import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import type { ContentBlock } from "@vectorize-io/hindsight-client";
 import type { DecomposedStep } from "./decomposer.ts";
 import type { ResolvedActionId } from "./judge.ts";
 import { matchPath } from "./paths.ts";
+import { buildRetainPayloadFromStep } from "./payload.ts";
 import type { BankConfig, ObservationScopes, RetainPayloadKind } from "./types.ts";
 
 // ─────────────────────────────────────────────────────────────
@@ -32,7 +31,7 @@ export interface ReflectParams {
 }
 
 export interface RetainParams {
-  readonly content: string;
+  readonly content: string | ContentBlock[];
   readonly payloadKind: RetainPayloadKind;
   readonly context: string | null;
   readonly documentId: string | null;
@@ -63,6 +62,8 @@ export interface KnowledgePageUpdateParams {
   readonly sourceQuery: string | null;
   readonly parentId: string | null | undefined;
   readonly tags: readonly string[] | null;
+  /** true 表示按最新记忆重新构建页面内容；此时只给 nodeId 就是一次合法的刷新。 */
+  readonly refresh: boolean;
 }
 
 export interface KnowledgeFolderCreateParams {
@@ -139,6 +140,69 @@ export type SlotExtractionPort = (
 ) => Promise<SlotExtraction>;
 
 // ─────────────────────────────────────────────────────────────
+// retain 载荷
+// ─────────────────────────────────────────────────────────────
+
+export type PayloadLoad =
+  | {
+      readonly status: "ok";
+      readonly content: string | ContentBlock[];
+      readonly payloadKind: RetainPayloadKind;
+    }
+  | { readonly status: "incomplete"; readonly missing: readonly string[]; readonly reason: string };
+
+/** 载荷加载端口：默认实现按魔数解析 file/payload，测试与微调可整体替换。 */
+export type PayloadLoader = (step: DecomposedStep) => Promise<PayloadLoad>;
+
+/** 只有 command、既没有 file 也没有 content 时返回空载荷，由 `retainSlots` 决定是否回退到提取器。 */
+const EMPTY_PAYLOAD: PayloadLoad = { status: "ok", content: "", payloadKind: "inline" };
+
+const loadPayload: PayloadLoader = async (step) => {
+  try {
+    const payload = await buildRetainPayloadFromStep(step);
+    if (payload === null) return EMPTY_PAYLOAD;
+    return { status: "ok", content: payload.content, payloadKind: payload.payloadKind };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { status: "incomplete", missing: ["content"], reason: message };
+  }
+};
+
+/**
+ * 只有一句操作话术、没有真内容时不得提交：服务端会把这句话当成正文抽出 0 单元文档，
+ * 库里留下一条只有指令残句的脏记录。判定方式是把这句里所有非内容成分剥掉，看还剩什么。
+ */
+const RETAIN_SCAFFOLD_VERB =
+  /^\s*(?:please\s+|请\s*|帮我\s*|帮忙\s*)*(?:retain|remember|save|store|keep|记一下|记住|记下|记录一下|保存一下|保存|存一下|收录|沉淀一下|沉淀|入库)/i;
+const RETAIN_SCAFFOLD_NAME = /(?:names?|名字|名为|叫做?|叫|called|named)\s*[:：=]?\s*[^\s,，。;；]+/gi;
+const RETAIN_SCAFFOLD_FILLER =
+  /(?:\b(?:to|into|the|a|an|bank|vault|memory|knowledge|base|this|that|my|paper|document|article|report|file)\b|到|进|入|这份|这篇|这个|一下|里面|里去|记忆库|知识库|库里|库中|文档|文件|论文|文章|报告|综述)/gi;
+
+function isRetainScaffold(content: string | ContentBlock[], bank: BankConfig | undefined): boolean {
+  if (typeof content !== "string") return false;
+  let rest = stripBankTokens(content.toLowerCase(), bank);
+  rest = rest
+    .replace(RETAIN_SCAFFOLD_NAME, " ")
+    .replace(RETAIN_SCAFFOLD_VERB, " ")
+    .replace(RETAIN_SCAFFOLD_FILLER, " ")
+    .replace(/[\s\p{P}\p{S}]+/gu, "");
+  return rest.length === 0;
+}
+
+function stripBankTokens(text: string, bank: BankConfig | undefined): string {
+  if (bank === undefined) return text;
+  let rest = text;
+  for (const token of [bank.id, bank.bankId]) {
+    const normalized = token.trim().toLowerCase();
+    if (normalized.length < 2) continue;
+    rest = /^[a-z0-9._-]+$/i.test(normalized)
+      ? rest.replace(new RegExp(`\\b${normalized.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "gi"), " ")
+      : rest.split(normalized).join(" ");
+  }
+  return rest;
+}
+
+// ─────────────────────────────────────────────────────────────
 // 动作参数装配
 // ─────────────────────────────────────────────────────────────
 
@@ -147,6 +211,8 @@ export async function assembleSlots(
   step: DecomposedStep,
   extractionPort?: SlotExtractionPort,
   bank?: BankConfig,
+  nameLookup?: NameLookupPort,
+  payloadLoader: PayloadLoader = loadPayload,
 ): Promise<SlotAssembly> {
   const target = readTarget(step.target);
 
@@ -157,21 +223,27 @@ export async function assembleSlots(
     case "operation.list":
       return ready(null);
 
-    case "recall":
-      return ready({ query: step.command, maxTokens: bank?.recall.maxTokens ?? null });
+    case "recall": {
+      const query = recallQuery(step.command);
+      if (query === null) {
+        return incomplete(
+          ["query"],
+          "裸 recall 没有查询词：请给出要查的关键词或问题，否则只会拿回一次与问题无关的全域宽召回",
+        );
+      }
+      return ready({ query, maxTokens: bank?.recall.maxTokens ?? null });
+    }
 
     case "reflect":
     case "knowledge_base.search":
       return ready({ query: step.command });
 
     case "retain":
-      return await retainSlots(step, target, extractionPort, bank);
+      return await retainSlots(step, target, extractionPort, bank, payloadLoader);
 
     case "knowledge_base.get":
     case "knowledge_base.page_delete": {
-      const page = await idFromTargetOrCommand(target?.params.id, extractionPort, step.command, {
-        page_id: "知识页 id（target 路径里的一段）",
-      }, "page_id");
+      const page = await entityIdFor(step, target, extractionPort, PAGE_ENTITY, bank, nameLookup);
       return page.status === "incomplete" ? page : ready({ pageId: page.id });
     }
 
@@ -179,7 +251,7 @@ export async function assembleSlots(
       return await pageCreateSlots(step, target, extractionPort);
 
     case "knowledge_base.page_update":
-      return await pageUpdateSlots(step, target, extractionPort);
+      return await pageUpdateSlots(step, target, extractionPort, bank, nameLookup);
 
     case "knowledge_base.folder_create":
       return await folderCreateSlots(step, extractionPort);
@@ -187,9 +259,7 @@ export async function assembleSlots(
     case "mental_model.get":
     case "mental_model.refresh":
     case "mental_model.delete": {
-      const model = await idFromTargetOrCommand(target?.params.id, extractionPort, step.command, {
-        mental_model_id: "心智模型 id",
-      }, "mental_model_id");
+      const model = await entityIdFor(step, target, extractionPort, MODEL_ENTITY, bank, nameLookup);
       return model.status === "incomplete" ? model : ready({ mentalModelId: model.id });
     }
 
@@ -223,49 +293,58 @@ async function retainSlots(
   target: TargetView | null,
   extractionPort: SlotExtractionPort | undefined,
   bank: BankConfig | undefined,
+  payloadLoader: PayloadLoader,
 ): Promise<SlotAssembly> {
   if (bank === undefined) return incomplete(["bank"], "没有可写入的记忆库配置");
 
-  const payload = await loadPayload(step, extractionPort);
+  const payload = await payloadLoader(step);
   if (payload.status === "incomplete") return payload;
 
+  const content = await retainedContent(payload, step, extractionPort, bank);
+  if (content === null) {
+    return incomplete(
+      ["content"],
+      "这次 retain 没有任何可沉淀的正文：请用 content 传正文，或用 file 指向本地文件；空 retain 只会生成 0 单元的脏文档",
+    );
+  }
+
   return ready({
-    content: payload.content,
-    payloadKind: payload.payloadKind,
-    context: step.command,
+    content: content.content,
+    payloadKind: content.payloadKind,
+    // 指令原文写进 context 会被服务端抽成「用户要求保留…」这类元事实，污染领域知识。
+    context: null,
     documentId: target?.params.doc ?? null,
     tags: [...bank.retain.constantTags],
     observationScopes: bank.retain.scopes,
   });
 }
 
-type PayloadLoad =
-  | { readonly status: "ok"; readonly content: string; readonly payloadKind: RetainPayloadKind }
-  | { readonly status: "incomplete"; readonly missing: readonly string[]; readonly reason: string };
-
-async function loadPayload(step: DecomposedStep, extractionPort: SlotExtractionPort | undefined): Promise<PayloadLoad> {
-  if (step.file !== null) {
-    const path = resolve(step.file);
-    try {
-      return { status: "ok", content: await readFile(path, "utf8"), payloadKind: "file" };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return { status: "incomplete", missing: ["content"], reason: `读取本地文件失败：${path}（${message}）` };
-    }
+async function retainedContent(
+  payload: Extract<PayloadLoad, { status: "ok" }>,
+  step: DecomposedStep,
+  extractionPort: SlotExtractionPort | undefined,
+  bank: BankConfig,
+): Promise<{ readonly content: string | ContentBlock[]; readonly payloadKind: RetainPayloadKind } | null> {
+  const empty = typeof payload.content === "string" ? payload.content.trim().length === 0 : payload.content.length === 0;
+  if (!empty) {
+    return isRetainScaffold(payload.content, bank)
+      ? null
+      : { content: payload.content, payloadKind: payload.payloadKind };
   }
-  if (step.payload !== null) return { status: "ok", content: step.payload, payloadKind: "inline" };
-
+  // 空载荷且确实没有文件或正文：最后让提取器从指令里切一段结论，切不出来就报缺正文。
+  if (step.file !== null || step.payload !== null) return null;
   const extracted = await extract(extractionPort, step.command, {
     content: "指令里真正要沉淀的那段结论原文",
   });
-  const content = readString(extracted.content) ?? step.command;
-  return { status: "ok", content, payloadKind: "inline" };
+  const fallback = readString(extracted.content);
+  if (fallback === null || isRetainScaffold(fallback, bank)) return null;
+  return { content: fallback, payloadKind: "inline" };
 }
 
 // ─────────────────────────────────────────────────────────────
 // 名称兜底
-//   槽位提取器没给出 name 时，用中文里最常见的几种命名句式直接切原文：
-//   模型漏抽一次名称不该让整条请求变成一句「缺少 name」。
+//   槽位提取器没给出 id/名称时，用中文与英文里最常见的几种命名句式直接切原文：
+//   模型漏抽一次名称不该让整条请求变成一句「缺少 id」。
 // ─────────────────────────────────────────────────────────────
 
 const KNOWLEDGE_PAGE_NAME_PATTERNS: readonly RegExp[] = [
@@ -284,6 +363,16 @@ const MENTAL_MODEL_NAME_PATTERNS: readonly RegExp[] = [
   /(?:心智模型|模型)\s*[「“"']([^」”"']{2,40})[」”"']/,
 ];
 
+/** 跨实体的保守命名句式：只在点名实体名、而不是点名某个 id 时才算数。 */
+const COMMON_NAME_PATTERNS: readonly RegExp[] = [
+  /(?:名为|名字(?:叫|是)|叫做?)\s*[「“"'《]?([^」”"'》\s,，。；;:：]{1,60})[」”"'》]?/,
+  /\bnamed\s+["“'「]?([^"”'」\s,.;:]{1,60})/i,
+  /\bnames?\s*(?:is|[:=])\s*["“'「]?([^"”'」\s,.;]{1,60})/i,
+];
+
+const PAGE_NAME_PATTERNS: readonly RegExp[] = [...KNOWLEDGE_PAGE_NAME_PATTERNS, ...COMMON_NAME_PATTERNS];
+const MODEL_NAME_PATTERNS: readonly RegExp[] = [...MENTAL_MODEL_NAME_PATTERNS, ...COMMON_NAME_PATTERNS];
+
 function nameFromCommand(command: string, patterns: readonly RegExp[]): string | null {
   for (const pattern of patterns) {
     const captured = pattern.exec(command)?.[1]?.trim();
@@ -292,13 +381,138 @@ function nameFromCommand(command: string, patterns: readonly RegExp[]): string |
   return null;
 }
 
+// ─────────────────────────────────────────────────────────────
+// 名称 → id
+//   读/改/删一个已存在的页面或模型时，用户给名字是常态；id 只是其中一种写法。
+// ─────────────────────────────────────────────────────────────
+
+export interface NameLookupPort {
+  resolveMentalModelId(bankId: string, name: string): Promise<string | null>;
+  resolveKnowledgePageId(bankId: string, name: string): Promise<string | null>;
+}
+
+interface EntitySpec {
+  readonly kind: "page" | "model";
+  /** 提取器里的 id 槽位名。 */
+  readonly slot: string;
+  readonly label: string;
+  readonly idHint: string;
+  readonly patterns: readonly RegExp[];
+}
+
+const PAGE_ENTITY: EntitySpec = {
+  kind: "page",
+  slot: "page_id",
+  label: "知识页",
+  idHint: "知识页 id（target 路径里的一段，或页面自身给出的 id）",
+  patterns: PAGE_NAME_PATTERNS,
+};
+
+const UPDATE_NODE_ENTITY: EntitySpec = {
+  kind: "page",
+  slot: "node_id",
+  label: "知识页",
+  idHint: "要被更新的知识页或文件夹 id（target 路径里的一段）",
+  patterns: PAGE_NAME_PATTERNS,
+};
+
+const MODEL_ENTITY: EntitySpec = {
+  kind: "model",
+  slot: "mental_model_id",
+  label: "心智模型",
+  idHint: "心智模型 id（target 路径里的一段，或模型自身给出的 id）",
+  patterns: MODEL_NAME_PATTERNS,
+};
+
+async function entityIdFor(
+  step: DecomposedStep,
+  target: TargetView | null,
+  extractionPort: SlotExtractionPort | undefined,
+  spec: EntitySpec,
+  bank: BankConfig | undefined,
+  nameLookup: NameLookupPort | undefined,
+): Promise<IdResolution> {
+  const extracted = await extract(extractionPort, step.command, {
+    [spec.slot]: spec.idHint,
+    name: `用户点名的${spec.label}名称（给了 id 就不用给名称）`,
+  });
+  return await resolveEntityId(step, target, spec, extracted, bank, nameLookup);
+}
+
+async function resolveEntityId(
+  step: DecomposedStep,
+  target: TargetView | null,
+  spec: EntitySpec,
+  extracted: Readonly<Record<string, unknown>>,
+  bank: BankConfig | undefined,
+  nameLookup: NameLookupPort | undefined,
+): Promise<IdResolution> {
+  const fromTarget = target?.params.id;
+  if (fromTarget !== undefined && fromTarget.length > 0) return { status: "ok", id: fromTarget };
+
+  const extractedId = readString(extracted[spec.slot]);
+  if (extractedId !== null) return { status: "ok", id: extractedId };
+
+  const name = readString(extracted.name) ?? nameFromCommand(step.command, spec.patterns);
+  if (name === null) {
+    return {
+      status: "incomplete",
+      missing: [spec.slot],
+      reason: `没有给出 ${spec.label} id，也没有点名${spec.label}名称；可用 target 指定虚拟路径，或说出唯一名称`,
+    };
+  }
+  return await resolveByName(name, spec, bank, nameLookup);
+}
+
+async function resolveByName(
+  name: string,
+  spec: EntitySpec,
+  bank: BankConfig | undefined,
+  nameLookup: NameLookupPort | undefined,
+): Promise<IdResolution> {
+  if (nameLookup === undefined || bank === undefined) {
+    return {
+      status: "incomplete",
+      missing: [spec.slot],
+      reason: `用户给的是${spec.label}名称「${name}」，但当前没有按名称解析的通道；请改给 ${spec.slot}，或用 target 指定虚拟路径`,
+    };
+  }
+  const id =
+    spec.kind === "page"
+      ? await nameLookup.resolveKnowledgePageId(bank.bankId, name)
+      : await nameLookup.resolveMentalModelId(bank.bankId, name);
+  if (id === null) {
+    return {
+      status: "incomplete",
+      missing: [spec.slot],
+      reason: `没有找到名为「${name}」的${spec.label}；请先列出清单确认唯一名称，或直接给 ${spec.slot}`,
+    };
+  }
+  return { status: "ok", id };
+}
+
+// ─────────────────────────────────────────────────────────────
+// 创建：target 里的 id 段只有像名字时才能当名称
+// ─────────────────────────────────────────────────────────────
+
+/** 服务端生成的 id 段：拿它当页面/模型名称只会得到一串机器编号。 */
+const GENERATED_ID_SEGMENT = /^(?:kp|mm|op|doc)-/i;
+const UUID_SEGMENT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function seedNameFromTarget(id: string | null): string | null {
+  if (id === null) return null;
+  const segment = lastNameSegment(id);
+  if (segment.length === 0 || GENERATED_ID_SEGMENT.test(segment) || UUID_SEGMENT.test(segment)) return null;
+  return segment;
+}
+
 async function pageCreateSlots(
   step: DecomposedStep,
   target: TargetView | null,
   extractionPort: SlotExtractionPort | undefined,
 ): Promise<SlotAssembly> {
   const pageId = target?.params.id ?? null;
-  let name = pageId === null ? null : lastNameSegment(pageId);
+  let name = seedNameFromTarget(pageId);
   let sourceQuery = step.command;
   let parentId: string | null = null;
   let tags: readonly string[] = [];
@@ -325,38 +539,59 @@ async function pageCreateSlots(
   return ready({ name, sourceQuery, parentId, tags });
 }
 
+// ─────────────────────────────────────────────────────────────
+// 页面更新：构建/刷新已存在页面，或改标题、取材问题、归属、标签
+// ─────────────────────────────────────────────────────────────
+
+const PAGE_REFRESH = /构建|重建|重新生成|刷新|重新构建|refresh|rebuild|build/i;
+const SOURCE_QUERY_UPDATE =
+  /(?:取材问题|取材的问?题|source\s*query|source_query|question)\s*(?:改为|改成|换成|更新为|设为|调整成|[:：]|to\s+|->|→)\s*[「“"'《]?([^」”"'》\n]{1,200})[」”"'》]?/i;
+const NAME_UPDATE =
+  /(?:重命名为|重命名成|改名为|改名成|名字(?:改成|改为|换成)|标题(?:改成|改为|换成)|rename\s+to)\s*[「“"'《]?([^」”"'》\n]{1,80})[」”"'》]?/i;
+/** 后半个分句是另一件事（「…，然后刷新」），不该混进取材问题。 */
+const TRAILING_CLAUSE = /[，,;；]\s*(?:然后|接着|随后|再|并且|同时|and\s+then|then)[\s\S]*$/i;
+
+function patchValueFromCommand(command: string, pattern: RegExp): string | null {
+  const captured = pattern.exec(command)?.[1];
+  if (captured === undefined) return null;
+  const cleaned = captured.replace(TRAILING_CLAUSE, "").replace(/^[\s,，:：、]+|[\s,，。;；]+$/g, "");
+  return cleaned.length === 0 ? null : cleaned;
+}
+
 async function pageUpdateSlots(
   step: DecomposedStep,
   target: TargetView | null,
   extractionPort: SlotExtractionPort | undefined,
+  bank: BankConfig | undefined,
+  nameLookup: NameLookupPort | undefined,
 ): Promise<SlotAssembly> {
-  let nodeId = target?.params.id ?? null;
-  let name: string | null = null;
-  let sourceQuery: string | null = null;
-  let parentId: string | null | undefined = undefined;
-  let tags: readonly string[] | null = null;
+  const refresh = PAGE_REFRESH.test(step.command);
 
   const extracted = await extract(extractionPort, step.command, {
     node_id: "要被更新的知识页或文件夹 id",
-    name: "新的标题",
+    name: "用户点名的知识页名称（不是要改成的新名字）",
+    new_name: "更新后的标题",
     source_query: "新的取材问题",
     parent_id: "新的父文件夹 id",
     tags: "新的标签集合",
   });
-  nodeId = nodeId ?? readString(extracted.node_id);
-  name = readString(extracted.name);
-  sourceQuery = readString(extracted.source_query);
-  const extractedParent = readString(extracted.parent_id);
-  parentId = extractedParent === null ? undefined : extractedParent;
-  tags = readStringArray(extracted.tags);
 
-  if (nodeId === null) {
-    return incomplete(["node_id"], "没有给出要更新的知识页 id（可用 target 指定虚拟路径）");
+  const node = await resolveEntityId(step, target, UPDATE_NODE_ENTITY, extracted, bank, nameLookup);
+  if (node.status === "incomplete") return node;
+
+  const name = readString(extracted.new_name) ?? patchValueFromCommand(step.command, NAME_UPDATE);
+  const sourceQuery = readString(extracted.source_query) ?? patchValueFromCommand(step.command, SOURCE_QUERY_UPDATE);
+  const extractedParent = readString(extracted.parent_id);
+  const parentId: string | null | undefined = extractedParent === null ? undefined : extractedParent;
+  const tags = readStringArray(extracted.tags);
+
+  if (name === null && sourceQuery === null && parentId === undefined && tags === null && !refresh) {
+    return incomplete(
+      ["patch"],
+      "没有给出任何要更新的字段（标题、取材问题、归属、标签），也没有构建/刷新指令",
+    );
   }
-  if (name === null && sourceQuery === null && parentId === undefined && tags === null) {
-    return incomplete(["patch"], "没有给出任何要更新的字段（标题、取材问题、归属或标签）");
-  }
-  return ready({ nodeId, name, sourceQuery, parentId, tags });
+  return ready({ nodeId: node.id, name, sourceQuery, parentId, tags, refresh });
 }
 
 async function folderCreateSlots(
@@ -378,7 +613,7 @@ async function mentalModelCreateSlots(
   extractionPort: SlotExtractionPort | undefined,
 ): Promise<SlotAssembly> {
   const modelId = target?.params.id ?? null;
-  let name = modelId === null ? null : lastNameSegment(modelId);
+  let name = seedNameFromTarget(modelId);
   let sourceQuery = step.command;
   let tags: readonly string[] = [];
 
@@ -421,6 +656,20 @@ async function idFromTargetOrCommand(
   const value = readString(extracted[slot]);
   if (value === null) return { status: "incomplete", missing: [slot], reason: `没有给出 ${slot}` };
   return { status: "ok", id: value };
+}
+
+// ─────────────────────────────────────────────────────────────
+// 召回查询词
+// ─────────────────────────────────────────────────────────────
+
+const RECALL_LEAD =
+  /^\s*(?:please\s+|请\s*|帮我\s*|帮忙\s*)*(?:recall|search|look\s*up|召回|回忆|查一下|查一查|查查|搜索|搜一下|检索|找一下)\s*(?:一下|下|看看|看下)?\s*[:：,，、\-—]?\s*/i;
+const EDGE_PUNCTUATION = /^[\s,，.。、;；:：!！?？\-—]+|[\s,，.。、;；:：\-—]+$/g;
+
+/** 裸 recall 不是一次查询：切掉动词后没有剩余，就该报缺 query 而不是全域宽召回。 */
+function recallQuery(command: string): string | null {
+  const query = command.replace(RECALL_LEAD, "").replace(EDGE_PUNCTUATION, "").trim();
+  return query.length === 0 ? null : query;
 }
 
 // ─────────────────────────────────────────────────────────────

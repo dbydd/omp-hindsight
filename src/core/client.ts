@@ -247,6 +247,30 @@ export interface ChunkListOptions {
   readonly signal?: AbortSignal;
 }
 
+export interface DocumentListOptions {
+  /** 文档 id 或正文的子串匹配（服务端不建索引，只用于浏览）。 */
+  readonly q?: string;
+  readonly limit?: number;
+  readonly offset?: number;
+}
+
+/** 文档列表行：只留浏览与回执要用的元数据，正文走文档门牌单独读。 */
+export interface DocumentListEntry {
+  readonly id: string;
+  readonly text_length?: number | null;
+  readonly memory_unit_count?: number | null;
+  readonly created_at?: string | null;
+  readonly updated_at?: string | null;
+  readonly tags?: readonly string[] | null;
+}
+
+export interface DocumentList {
+  readonly items: readonly DocumentListEntry[];
+  readonly total: number;
+  readonly limit: number;
+  readonly offset: number;
+}
+
 export interface OperationListOptions {
   readonly status?: string;
   readonly type?: string;
@@ -276,6 +300,13 @@ export interface OperationList {
 
 export interface CallOptions {
   readonly signal?: AbortSignal;
+}
+
+/** bank 对齐参数：描述连同 recall 偏好一起落地，避免门牌与服务端各说各话。 */
+export interface BankAlignOptions {
+  readonly description?: string | null;
+  readonly recallPreferObservations?: boolean;
+  readonly recallMaxTokens?: number;
 }
 
 /** 队列只需要这一件事：把一条 retain 重新提交出去。 */
@@ -371,6 +402,36 @@ export class HindsightHttpClient {
     );
   }
 
+  async listDocuments(bank: string, options: DocumentListOptions = {}): Promise<DocumentList> {
+    return this.call("listDocuments", undefined, async () => {
+      const response = await this.client.listDocuments(bank, {
+        q: options.q,
+        limit: options.limit,
+        offset: options.offset,
+      });
+      return {
+        items: response.items.map((item) => ({
+          id: item.id,
+          text_length: item.text_length ?? null,
+          memory_unit_count: item.memory_unit_count ?? null,
+          created_at: item.created_at ?? null,
+          updated_at: item.updated_at ?? null,
+          tags: item.tags ?? null,
+        })),
+        total: response.total,
+        limit: response.limit,
+        offset: response.offset,
+      };
+    });
+  }
+
+  /** 删文档连同它抽出来的记忆单元；404 视为已经删掉，由调用方决定是否容忍。 */
+  async deleteDocument(bank: string, documentId: string, options: CallOptions = {}): Promise<void> {
+    await this.call("deleteDocument", options.signal, () =>
+      this.client.deleteDocument(bank, documentId, { signal: options.signal }),
+    );
+  }
+
   async listDocumentChunks(
     bank: string,
     documentId: string,
@@ -426,37 +487,49 @@ export class HindsightHttpClient {
    *
    * 写入时服务端会静默自动建库，但只套用系统缺省值（`concise` 抽取、关闭
    * observation 优先），长文抽取质量一旦降级就不会自己回来。所以启动时先对齐一次：
-   * 不存在就按模板建，存在但抽取模式或 recall 偏好漂移就改写。
+   * 不存在就按模板建，存在但抽取模式或 recall 偏好与配置不一致就改写。
+   *
+   * 两条路径都只发一次配置写请求：建库后的形态一次补齐，已有库只改漂移的键，
+   * 逐键分开发会让相邻请求之间留下半套配置的窗口。
    */
-  async alignBank(bankId: string, options: { description?: string | null } = {}): Promise<void> {
+  async alignBank(bankId: string, options: BankAlignOptions = {}): Promise<void> {
+    const preferObservations = options.recallPreferObservations ?? true;
     let config: BankConfigResponse;
     try {
       config = await this.call("getBankConfig", undefined, () => this.client.getBankConfig(bankId));
     } catch (error) {
       if (!(error instanceof HindsightRequestError) || error.statusCode !== 404) throw error;
       await this.call("createBank", undefined, () =>
-        this.client.createBank(bankId, {
-          mission: options.description ?? undefined,
+        this.client.createBank(bankId, { mission: options.description ?? undefined }),
+      );
+      await this.call("updateBankConfig", undefined, () =>
+        this.client.updateBankConfig(bankId, {
           retainExtractionMode: "custom",
-          enableObservations: true,
           retainChunkSize: 4000,
+          enableObservations: true,
+          enableAutoConsolidation: false,
+          recallPreferObservations: preferObservations,
+          ...(options.recallMaxTokens === undefined ? {} : { recallMaxTokens: options.recallMaxTokens }),
         }),
       );
-      // 建库端点没有这一项，但它决定入库期间会不会自己起 consolidation，补一次覆盖。
-      await this.call("updateBankConfig", undefined, () =>
-        this.client.updateBankConfig(bankId, { enableAutoConsolidation: false }),
-      );
       return;
     }
-    if (config.config.retain_extraction_mode === "custom" && config.config.recall_prefer_observations !== false) {
-      return;
+
+    const current = config.config;
+    const patch: {
+      retainExtractionMode?: string;
+      recallPreferObservations?: boolean;
+      recallMaxTokens?: number;
+    } = {};
+    if (current.retain_extraction_mode !== "custom") patch.retainExtractionMode = "custom";
+    if (current.recall_prefer_observations !== preferObservations) {
+      patch.recallPreferObservations = preferObservations;
     }
-    await this.call("updateBankConfig", undefined, () =>
-      this.client.updateBankConfig(bankId, {
-        retainExtractionMode: "custom",
-        recallPreferObservations: true,
-      }),
-    );
+    if (options.recallMaxTokens !== undefined && current.recall_max_tokens !== options.recallMaxTokens) {
+      patch.recallMaxTokens = options.recallMaxTokens;
+    }
+    if (Object.keys(patch).length === 0) return;
+    await this.call("updateBankConfig", undefined, () => this.client.updateBankConfig(bankId, patch));
   }
 
   // ── 知识库 ────────────────────────────────────────────────
@@ -676,6 +749,51 @@ export class HindsightHttpClient {
       return { success: data.success, message: data.message };
     });
   }
+
+  /**
+   * 已完成任务能回滚的只有它写出来的文档。
+   *
+   * 文档 id 的位置随任务类型变化：父任务行、子任务行、`result_metadata` 与原始
+   * 提交载荷各写各的，且后两者没有稳定类型。所以取一次带载荷的原始响应，
+   * 按字段名递归收集，绝不假设某一种载荷结构。
+   */
+  async operationDocumentIds(
+    bank: string,
+    operationId: string,
+    options: CallOptions = {},
+  ): Promise<readonly string[]> {
+    return this.call("operationDocumentIds", options.signal, async () => {
+      const response = await sdk.getOperationStatus({
+        client: this.engine,
+        path: { bank_id: bank, operation_id: operationId },
+        query: { include_payload: true },
+        signal: options.signal,
+      });
+      const data = unwrapSdk("operationDocumentIds", response);
+      return [...new Set(collectDocumentIds(data))];
+    });
+  }
+}
+
+const DOCUMENT_ID_KEY = /^document_ids?$/;
+
+/** 从任务响应里按字段名收集 document id；深度封顶，避免异常载荷把递归拖进环。 */
+function collectDocumentIds(value: unknown, depth = 0): string[] {
+  if (depth > 6 || value === null || typeof value !== "object") return [];
+  const found: string[] = [];
+  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+    if (DOCUMENT_ID_KEY.test(key)) {
+      if (typeof nested === "string" && nested.length > 0) found.push(nested);
+      if (Array.isArray(nested)) {
+        for (const entry of nested) {
+          if (typeof entry === "string" && entry.length > 0) found.push(entry);
+        }
+      }
+      continue;
+    }
+    found.push(...collectDocumentIds(nested, depth + 1));
+  }
+  return found;
 }
 
 /**

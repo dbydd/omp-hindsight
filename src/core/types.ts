@@ -141,7 +141,7 @@ export type InternalPath = `hindsight://${string}`;
 // ─────────────────────────────────────────────────────────────
 
 /** 沉淀内容的来源形态，对应 judge 的 retain_source 选项。 */
-export type RetainPayloadKind = "inline" | "file" | "session";
+export type RetainPayloadKind = "inline" | "file" | "session" | "multimodal";
 
 export interface RetainReceipt {
   readonly kind: "retain";
