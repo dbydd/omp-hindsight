@@ -51,6 +51,7 @@
 | `mental_model_action` | `list`<br>`get`<br>`create`<br>`refresh`<br>`delete` | `action_family` ∈ {mental_model} |
 | `operation_action` | `list`<br>`get`<br>`cancel` | `action_family` ∈ {operation_view} |
 | `target_bank` | 配置的 bank 列表 | `action_family` ∈ {memory_query, memory_retain, knowledge_base, mental_model, operation_view} |
+| `inject_decision` | `inject`<br>`skip` | 总是提问 |
 
 ## 上下文组合与隔离矩阵（CONTEXT_PROJECTIONS）
 
@@ -65,6 +66,7 @@
 | `operation_action` | tier2 | `command` | `confirmed_family:operation_view` | `content_options`<br>`payload_text` |
 | `target_bank` | tier3 | `command`<br>`action` | `available_banks` | `read_options`<br>`payload_text` |
 | `candidate_rerank` | tier3 | `query`<br>`task_context` | `candidates:index,bank,summary` | `full_document_text`<br>`unretrieved_banks` |
+| `inject_decision` | recall | `trigger`<br>`query`<br>`task_context`<br>`injected_this_session` | `candidates`<br>`candidate_scores` | `full_document_text`<br>`full_chat_transcript`<br>`unretrieved_banks` |
 
 ## 标准化回执规范（RECEIPT_TEMPLATES）
 

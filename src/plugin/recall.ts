@@ -10,7 +10,7 @@
 import type { CustomMessagePayload } from "@oh-my-pi/pi-coding-agent";
 import { RECALL_FENCE } from "../../ssot/spec.ts";
 import type { RecallOptions } from "../core/client.ts";
-import type { ChoiceQuestion, JudgePort } from "../core/judge.ts";
+import { decideInjection, type ChoiceQuestion, type ExecutionEnv, type JudgePort } from "../core/judge.ts";
 import { buildPath } from "../core/paths.ts";
 import type { BankConfig, HindsightConfig, InternalPath, TagsMatch } from "../core/types.ts";
 import type { HindsightPluginRuntime } from "./runtime.ts";
@@ -99,6 +99,10 @@ function intentSentence(text: string | undefined, config: HindsightConfig): stri
   const flattened = text.replace(/\s+/g, " ").trim();
   if (flattened.length === 0) return null;
   const limit = Math.max(1, config.recallIntentMaxChars);
+  // 短提示整句进查询：第一句常常只是铺垫（「先跑一次 date」），真正要找的东西在
+  // 后面那句里，按句号切断会把查询做成一句无关的前言。只有提示本身超出预算时才
+  // 退回「取第一句」——长提示里第一句通常是主旨，后续才是补充细节。
+  if (flattened.length <= limit) return flattened;
   // 只按中英文的句末标点切断；ASCII 句点留给路径、版本号与小数。
   const stop = flattened.search(/[。！？!?；;]/);
   const sentence = stop > 0 ? flattened.slice(0, stop) : flattened;
@@ -194,6 +198,8 @@ export interface RecallMessageDetails {
   readonly query: string;
   /** 进判定 focus 的任务上下文；渲染器与 `hindsight://` 调试据此核对重排看到了什么。 */
   readonly taskContext?: string | null;
+  /** 注入判定结论；basis=fallback 说明是默认放行而非 judge 认可。 */
+  readonly injection?: { readonly basis: string; readonly confidence: number } | null;
   readonly banks: readonly string[];
   readonly facts: readonly RecallFactDetail[];
 }
@@ -222,6 +228,22 @@ export function setRecallLogger(next: RecallLogger | undefined): void {
   logger = next;
 }
 
+export interface AdaptiveRecallOptions {
+  /** 进判定 focus 的任务上下文；没有就是 null。 */
+  readonly taskContext?: string | null;
+  /** 触发点，进注入判定：turn-end 是误注入高发区，判据据此校准。 */
+  readonly trigger?: string;
+  /** 本会话已注入次数，进注入判定：说得多半已在用那些记忆。 */
+  readonly injectedThisSession?: number;
+  /**
+   * 本会话已经注入过的记忆 id。去重是确定性的事，不该让 judge 猜：
+   * 同一份结论反复注入只会挤掉新信息，还会让模型以为它在重复确认。
+   */
+  readonly excludeIds?: ReadonlySet<string>;
+  /** 判定环境；自动路径是只读召回，缺省即可。 */
+  readonly env?: ExecutionEnv;
+}
+
 function warn(message: string, context: Record<string, unknown>): void {
   logger?.warn(message, context);
 }
@@ -234,7 +256,7 @@ export async function performAdaptiveRecall(
   runtime: HindsightPluginRuntime,
   query: string,
   judgePort: JudgePort,
-  taskContext?: string | null,
+  options: AdaptiveRecallOptions = {},
 ): Promise<CustomMessagePayload | undefined> {
   try {
     const config = runtime.config;
@@ -244,7 +266,7 @@ export async function performAdaptiveRecall(
     const trimmed = query.trim().slice(0, Math.max(1, config.recallMaxQueryChars));
     if (trimmed.length === 0) return undefined;
 
-    const sampled = (taskContext ?? "").trim();
+    const sampled = (options.taskContext ?? "").trim();
     const context = sampled.length === 0 ? null : sampled;
 
     const settled = await Promise.allSettled(
@@ -268,7 +290,8 @@ export async function performAdaptiveRecall(
       return undefined;
     }
 
-    const unique = dedupe(hits);
+    // 先剔掉本会话已经注入过的：判据里「模型已在用同一条」是推理，这里是事实。
+    const unique = dedupe(hits).filter((hit) => options.excludeIds?.has(hit.id) !== true);
     const regular = unique.filter((hit) => !hit.antiPattern);
     const antiPatterns = unique
       .filter((hit) => hit.antiPattern)
@@ -288,13 +311,46 @@ export async function performAdaptiveRecall(
           ? (await rerank(config, trimmed, regular, judgePort, context)).slice(0, topK)
           : byScore(regular).slice(0, topK);
 
-    const facts: RecallFactDetail[] = [...chosen, ...antiPatterns].map(toDetail);
-    if (facts.length === 0) return undefined;
+    const pooled = [...chosen, ...antiPatterns];
+    if (pooled.length === 0) return undefined;
+
+    // 召回之后还有一道关：这些候选该不该占用这一轮的上下文。重排解决的是「哪条最贴题」，
+    // 这里解决的是「给不给」——关键词撞车、模型已在用同一条、与当前动作无关，都是重排
+    // 分数看不出来的，只有同时看到候选与任务上下文的判定能拦。
+    const injection = await decideInjection(
+      {
+        trigger: options.trigger ?? "prompt",
+        query: trimmed,
+        taskContext: context,
+        injectedThisSession: options.injectedThisSession ?? 0,
+        candidates: pooled.map((hit, index) => ({
+          index: index + 1,
+          bank: hit.bank.id,
+          type: hit.type,
+          summary: preview(hit.text, Math.max(1, config.recallPreviewChars)),
+        })),
+        topScore: chosen.length === 0 ? null : Math.max(...chosen.map((hit) => hit.score)),
+      },
+      config,
+      options.env ?? { role: null, isReadonly: false },
+      judgePort,
+    );
+    if (!injection.inject) {
+      warn("hindsight.recall.inject_skipped", {
+        trigger: options.trigger ?? "prompt",
+        candidates: pooled.length,
+        confidence: injection.confidence,
+      });
+      return undefined;
+    }
+
+    const facts: RecallFactDetail[] = pooled.map(toDetail);
 
     const details: RecallMessageDetails = {
       fence: FENCE_NAME,
       query: trimmed,
       taskContext: context,
+      injection: { basis: injection.basis, confidence: injection.confidence },
       banks: reached,
       facts,
     };

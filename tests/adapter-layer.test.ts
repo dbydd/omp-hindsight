@@ -229,7 +229,8 @@ describe("plugin/recall: 自适应提取与防抖", () => {
       recallConfig,
     );
     expect(isError).toBe(false);
-    expect(query).toBe("正在配置向量索引");
+    // 短提示整句进查询：第一句常常只是铺垫，按句号切断会把查询做成一句无关的前言。
+    expect(query).toBe("正在配置向量索引。接下来准备调优参数。");
   });
 
   test("DebounceTracker 能够防抖跳过无位移查询", () => {

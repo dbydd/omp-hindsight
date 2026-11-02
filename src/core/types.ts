@@ -123,6 +123,10 @@ export interface HindsightConfig {
   readonly recallPreferObservations: boolean;
   readonly recallQueryPreamble: string;
   readonly recallAntiPatternGuard: boolean;
+  /** 注入前先判一次 `inject_decision`；关掉即任何非空召回都注入。 */
+  readonly recallInjectJudge: boolean;
+  /** judge 认为该注入的置信度下限；低于它不是改判跳过，而是回落按重排分数决定。 */
+  readonly recallInjectMinConfidence: number;
   readonly recallInjectPosition: string;
   readonly persistDisplay: boolean;
   readonly judgeAmbiguousConfidence: number;

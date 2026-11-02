@@ -8,7 +8,7 @@
  * 所有自动路径遵守 INV-7：失败只记一条 warn，绝不把异常抛进宿主。
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import type { CustomMessagePayload, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import type { QueueRunReport } from "../core/queue.ts";
 import type { HindsightConfig } from "../core/types.ts";
 import {
@@ -36,6 +36,10 @@ let debounce: DebounceTracker | undefined;
 /** 召回机会计数，不是宿主轮次计数（见 `passRecallGate`）。 */
 let turns = 0;
 let lastRecallAt = 0;
+/** 本会话已注入次数：进注入判定，用来识别「这些记忆模型早就在用了」。 */
+let injectedThisSession = 0;
+/** 本会话已注入过的记忆 id：同一份结论重复注入只会挤掉新信息。 */
+const injectedIds = new Set<string>();
 
 /**
  * 菜单与生命周期共用的宿主动作。装配交给这里，是因为运行时只有一个单例，
@@ -121,11 +125,19 @@ export function registerLifecycle(pi: ExtensionAPI): void {
       if (!built.isError && debounce?.unchanged(built.query) === true) return;
 
       const message = await withinBudget(
-        performAdaptiveRecall(runtime, built.query, createJudgePort(ctx), built.taskContext),
+        performAdaptiveRecall(runtime, built.query, createJudgePort(ctx), {
+          taskContext: built.taskContext,
+          trigger: "prompt",
+          injectedThisSession,
+          excludeIds: injectedIds,
+          env: { role: ctx.agent.name, isReadonly: ctx.agent.kind === "sub" },
+        }),
         config.injectTimeoutMs,
       );
       if (message === undefined) return;
       lastRecallAt = Date.now();
+      injectedThisSession += 1;
+      recordInjected(message);
       // 返回的消息会被持久化并显示在 TUI；`display` 由 `persistDisplay` 决定是否留在正文里。
       return {
         message:
@@ -167,11 +179,19 @@ export function registerLifecycle(pi: ExtensionAPI): void {
       if (!built.isError && debounce?.unchanged(built.query) === true) return;
 
       const message = await withinBudget(
-        performAdaptiveRecall(runtime, built.query, createJudgePort(ctx), built.taskContext),
+        performAdaptiveRecall(runtime, built.query, createJudgePort(ctx), {
+          taskContext: built.taskContext,
+          trigger: "turn-end",
+          injectedThisSession,
+          excludeIds: injectedIds,
+          env: { role: ctx.agent.name, isReadonly: ctx.agent.kind === "sub" },
+        }),
         config.injectTimeoutMs,
       );
       if (message === undefined) return;
       lastRecallAt = Date.now();
+      injectedThisSession += 1;
+      recordInjected(message);
       // 注入走 `pi.sendMessage`：会话级的动作挂在 `pi` 上（每个会话一份工厂实例），`ctx` 只有读接口。
       // `aside` 在下一个 step 边界注入，不打断正在跑的工具批次；改用 `context` 事件替换出站消息，
       // 注入的内容就与会话记录脱节，人事后查不到"这条结论是哪来的"。
@@ -270,8 +290,19 @@ async function withinBudget<T>(work: Promise<T>, budgetMs: number): Promise<T | 
 function resetRecallState(): void {
   turns = 0;
   lastRecallAt = 0;
+  injectedThisSession = 0;
+  injectedIds.clear();
   // 只清指纹：窗口大小属于配置，只有 session_start 装配运行时才重建。
   debounce?.reset();
+}
+
+/** 记住这次注入过哪些记忆：下一次召回据此把它们剔掉，不必让判定模型再猜一遍。 */
+function recordInjected(message: CustomMessagePayload): void {
+  if (typeof message === "string") return;
+  const details = message.details as { facts?: readonly { id?: unknown }[] } | undefined;
+  for (const fact of details?.facts ?? []) {
+    if (typeof fact.id === "string" && fact.id.length > 0) injectedIds.add(fact.id);
+  }
 }
 
 async function ensureRuntime(

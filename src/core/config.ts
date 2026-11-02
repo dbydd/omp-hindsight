@@ -335,6 +335,8 @@ export function parseConfig(raw: unknown, options: ParseConfigOptions = {}): Con
     recallPreferObservations: valueOf(global, "recallPreferObservations"),
     recallQueryPreamble: valueOf(global, "recallQueryPreamble"),
     recallAntiPatternGuard: valueOf(global, "recallAntiPatternGuard"),
+    recallInjectJudge: valueOf(global, "recallInjectJudge"),
+    recallInjectMinConfidence: valueOf(global, "recallInjectMinConfidence"),
     recallInjectPosition: valueOf(global, "recallInjectPosition"),
     persistDisplay: valueOf(global, "persistDisplay"),
     judgeAmbiguousConfidence: valueOf(global, "judgeAmbiguousConfidence"),

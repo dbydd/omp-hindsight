@@ -50,6 +50,8 @@
 | `recallPreferObservations` | global | boolean | 可选 | true | — | — |
 | `recallQueryPreamble` | global | string | 可选 | omp coding task memory lookup. | — | — |
 | `recallAntiPatternGuard` | global | boolean | 可选 | true | true 时启用反向踩坑熔断通道 | — |
+| `recallInjectJudge` | global | boolean | 可选 | true | 注入前先判一次 inject_decision；关掉即任何非空召回都注入 | — |
+| `recallInjectMinConfidence` | global | number | 可选 | 0.55 | judge 认为该注入的置信度下限；低于它不是改判跳过，而是回落按重排分数决定 | — |
 | `recallInjectPosition` | global | string | 可选 | append | append \\| prepend；注入消息在待发送序列里的位置 | — |
 | `persistDisplay` | global | boolean | 可选 | false | prompt 触发的召回是否作为持久消息留在会话里；false 则只进模型上下文 | — |
 | `judgeAmbiguousConfidence` | global | number | 可选 | 0.35 | 判定答案低于此置信度视为歧义，按 FAILURE_MODES 降级而不是硬猜 | — |

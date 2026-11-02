@@ -285,6 +285,8 @@ const CONFIG_KEYS_LITERAL = {
   recallPreferObservations:   { scope: "global", type: "boolean", default: true },
   recallQueryPreamble:        { scope: "global", type: "string", default: "omp coding task memory lookup." },
   recallAntiPatternGuard:     { scope: "global", type: "boolean", default: true, constraint: "true 时启用反向踩坑熔断通道" },
+  recallInjectJudge:          { scope: "global", type: "boolean", default: true, constraint: "注入前先判一次 inject_decision；关掉即任何非空召回都注入" },
+  recallInjectMinConfidence:  { scope: "global", type: "number", default: 0.55, constraint: "judge 认为该注入的置信度下限；低于它不是改判跳过，而是回落按重排分数决定" },
   recallInjectPosition:       { scope: "global", type: "string", default: "append", constraint: "append | prepend；注入消息在待发送序列里的位置" },
   persistDisplay:             { scope: "global", type: "boolean", default: false, constraint: "prompt 触发的召回是否作为持久消息留在会话里；false 则只进模型上下文" },
   judgeAmbiguousConfidence:   { scope: "global", type: "number", default: 0.35, constraint: "判定答案低于此置信度视为歧义，按 FAILURE_MODES 降级而不是硬猜" },
@@ -364,6 +366,15 @@ const JUDGE_QUESTIONS_LITERAL = [
     id: "target_bank",
     optionsFrom: "CONFIG_BANKS",
     when: { question: "action_family", in: ["memory_query", "memory_retain", "knowledge_base", "mental_model", "operation_view"] },
+  },
+
+  // ── recall 层：召回结果要不要占用这一轮上下文 ──
+  // inject_decision：唯一同时看得到「候选内容」与「当前在做什么」的环节，所以
+  // 「关键词撞车」「模型已在用同一条」「与当前动作无关」这些失效模式归它判，
+  // 而不是靠相似度分数或注入次数硬阈值。
+  {
+    id: "inject_decision",
+    optionsFrom: ["inject", "skip"],
   },
 ] as const satisfies readonly JudgeQuestionSpec[];
 
@@ -448,6 +459,15 @@ export const CONTEXT_PROJECTIONS: readonly ContextProjectionSpec[] = [
     focus: ["query", "task_context"],
     groundTruth: ["candidates:index,bank,summary"],
     forbidden: ["full_document_text", "unretrieved_banks"],
+  },
+  {
+    questionId: "inject_decision",
+    stage: "recall",
+    // 这一问是「要不要占用上下文」的最后一道关：候选内容、触发点、任务上下文三者同时可见，
+    // 才有资格判断命中的是知识还是同名词撞车。
+    focus: ["trigger", "query", "task_context", "injected_this_session"],
+    groundTruth: ["candidates", "candidate_scores"],
+    forbidden: ["full_document_text", "full_chat_transcript", "unretrieved_banks"],
   },
 ] as const;
 

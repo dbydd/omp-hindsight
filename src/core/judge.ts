@@ -204,11 +204,11 @@ export const QUESTION_COPY: Readonly<Record<JudgeQuestionId, QuestionCopy>> = {
   },
   action_family: {
     instructions:
-      "你在为 omp 的 Hindsight 记忆插件做意图分类。逐条阅读下面的解释，理解每个选项为什么存在、它们之间的边界在哪里，然后归类。\n背景：memory_query 和 memory_retain 操作的是散装的记忆事实（facts）；knowledge_base 和 mental_model 操作的是结构化资产（页面/目录/模型）。\n入库边界：把一份新的文件、论文、文章、文档、报告整份存进记忆库，是 memory_retain，不管用户把库叫「知识库」「vault」还是别的名字。paper / document / article / 论文 / 文章 / 文档 / 报告是内容名词，指「要存的那份新材料本身」，不是 knowledge_base 里的「页面(page)」。但这条边界只覆盖「把新材料存进来」这一个动作：如果句子是在对已经存好的记忆做翻查、检索、罗列或归纳（翻一遍我存的…/找出所有…的事实/列出…/综合出…的要点/总结一下…的思路），那是在读取已有内容，属于 memory_query，哪怕句中出现 vault、论文、综述这些词——材料是论文不等于这次动作是入库。\n知识库维护的边界：只有本句确实在对结构化页面或目录执行维护时才选 knowledge_base——建页、读页、改页、删页、构建/刷新某页、翻目录树，且动作的宾语就是「知识页 / 页面 / page / 文件夹 / 目录」。两个反例要排除：只说「存到知识库」再附一份文件或一段正文，是 memory_retain；句子正文只是在谈论页面（例如记录一条「页创建与模型创建共用参数」的事实），并没有真的在建页改页，也是 memory_retain。\n心智模型的边界：只要本句的动作对象就是某个心智模型本身——读它的正文、创建、刷新、删除、列出，就选 mental_model，不要求「心智模型」四个字出现在句首（「读一下工程准则心智模型的正文」里模型是被读的对象，仍是 mental_model）。还有一种命名声明：句首直接是「心智模型「X」：…」这种把模型名摆在冒号前的登记句式，即使后半句用「记录」「沉淀」等动词描述内容，也是在创建模型，选 mental_model。但如果只是在问关于模型的事实（「判断意图用的角色叫什么」「心智模型怎么实现的」），是 memory_query。\noperation_view 的例外：问的对象是后台异步任务本身（任务列表、有哪些失败的、积压多少、某任务进度、取消任务），即使句子是「有哪些…」这种疑问形式，也选 operation_view——它问的是系统运维状态，不是记忆里的事实。\n关键区分：问句、求助句和对比句（为什么/怎么/能不能/应该怎么说/对比/评估/总结/解释一下/比较）通常是 memory_query 或 none；但上面 operation_view 的运维问句例外。只有当句子真的在陈述或保存一条新内容时才选 memory_retain。",
+      "你在为 omp 的 Hindsight 记忆插件做意图分类。逐条阅读下面的解释，理解每个选项为什么存在、它们之间的边界在哪里，然后归类。\n背景：memory_query 和 memory_retain 操作的是散装的记忆事实（facts）；knowledge_base 和 mental_model 操作的是结构化资产（页面/目录/模型）。\n入库边界：把一份新的文件、论文、文章、文档、报告整份存进记忆库，是 memory_retain，不管用户把库叫「知识库」「vault」还是别的名字。paper / document / article / 论文 / 文章 / 文档 / 报告是内容名词，指「要存的那份新材料本身」，不是 knowledge_base 里的「页面(page)」。但这条边界只覆盖「把新材料存进来」这一个动作：如果句子是在对已经存好的记忆做翻查、检索、罗列或归纳（翻一遍我存的…/找出所有…的事实/列出…/综合出…的要点/总结一下…的思路），那是在读取已有内容，属于 memory_query，哪怕句中出现 vault、论文、综述这些词——材料是论文不等于这次动作是入库。\n知识库维护的边界：只有本句确实在对结构化页面或目录执行维护时才选 knowledge_base——建页、读页、改页、删页、构建/刷新某页、翻目录树，且动作的宾语就是「知识页 / 页面 / page / 文件夹 / 目录」。两个反例要排除：只说「存到知识库」再附一份文件或一段正文，是 memory_retain；句子正文只是在谈论页面（例如记录一条「页创建与模型创建共用参数」的事实），并没有真的在建页改页，也是 memory_retain。\n心智模型的边界：本句的动作宾语就是某个心智模型本身时选 mental_model——读它的正文、创建、刷新、删除、列出，或句首「心智模型「X」：…」这类命名声明。判据落在宾语上而不是词出现在哪：宾语里没有「心智模型 / mental model」这个实体时，句中冒出「模型」「角色」也是别的意思——「判断意图用的角色叫什么」在查配置值，「embedding 模型怎么选」在查选型结论，归 memory_query。\noperation_view 的例外：问的对象是一个正在运行或刚结束的作业实例（作业清单、有哪些失败的、积压多少、某作业进度、取消某个作业）时，即使句子是「有哪些…」这种疑问形式，也选 operation_view。但如果是在讨论 operation 这个对象的实现或字段语义（「getOperation 为什么返回 null」「progress 怎么聚合」「child_operations 是什么」），那是查代码事实，回到 memory_query 或 none——句中带「任务」「进度」并不够。\n关键区分：问句、求助句和对比句（为什么/怎么/能不能/应该怎么说/对比/评估/总结/解释一下/比较）通常是 memory_query 或 none；但上面 operation_view 的作业实例问句例外。只有当句子真的在陈述或保存一条新内容时才选 memory_retain。",
     criteria: {
       knowledge_base: "操作知识库结构化资产：知识页（page）、目录树/文件夹（folder）。选它的信号是本句正在对某个具体页面或目录执行维护——建页、改页、删页、构建/刷新某页、翻目录树、按关键词搜页面，且动作宾语就是页面或目录本身。容易混淆点：① 把一份文件、论文、文档整份存起来不是知识页操作（那是 memory_retain），哪怕用户口语里管库叫「知识库」，「帮我存一下这篇论文到知识库」是入库不是建页；② 只是在正文里谈论页面（「记录一下：页创建与模型创建共用一套参数」）是在存一条事实（memory_retain），不是在维护页面。",
-      mental_model: "操作心智模型：长期回答某个问题的认知资产，由系统自动归纳维护。选它的信号是本句动作的对象就是某个心智模型本身——读正文、创建、刷新、删除、列出；不要求「心智模型」出现在句首（「读一下工程准则心智模型的正文」也选这里）；句首「心智模型「X」：记录/沉淀…」这种命名声明同样选这里（是在登记新模型，「记录」后的内容只是模型要回答的问题描述）。容易混淆点：只是在问关于模型的事实（「心智模型怎么实现的」「判断意图用的角色叫什么」「对比两个方案」）是在查事实，选 memory_query。",
-      operation_view: "查看或取消后台异步任务（operation）：retain 提交后系统异步抽取事实。凡是在问任务队列/后台作业本身——任务列表、有哪些失败的、积压多少、某任务进度、取消任务——都选这里，即使句子是「有哪些…」的疑问形式（它问的是运维状态，不是记忆内容）。信号词：任务、作业、队列、积压、失败的、进度、取消。",
+      mental_model: "操作心智模型：长期回答某个问题的认知资产，由系统自动归纳维护。选它的信号是本句的动作宾语就是某个心智模型本身——「读一下工程准则心智模型的正文」「刷新那个心智模型」「列出所有心智模型」，或者句首「心智模型「X」：记录/沉淀…」这种命名声明（在登记新模型，后半句只是它要回答的问题）。判据落在宾语上，不落在词出现在哪个位置：宾语里没有「心智模型 / mental model」这个实体时，即使句中冒出「模型」「角色」这类词，讲的也是别的东西。「判断意图用的角色叫什么」是在查配置值，「embedding 模型怎么选」是在查选型结论，「对比两个方案」是在做比较——都归 memory_query。",
+      operation_view: "查看或取消本系统正在跑的异步作业：用户要看作业清单、某个作业当前的进度与状态、积压情况，或者要中止一个作业时才选这里。判据是句子里有没有指向一个具体的作业实例（「那个入库任务跑完了吗」「取消刚才那个」「队列里积压了多少」「哪些任务失败了」）。反例很重要：讨论 operation 这个对象的实现或字段行为——「getOperation 为什么返回 null」「child_operations 怎么聚合」「progress 字段是什么语义」——是在问代码事实，属于 memory_query 或 none；句中带「任务」「进度」并不够，必须指向作业实例才选这里。",
       memory_retain: "把新内容沉淀进记忆库：整份新文件、论文、文章、文档、报告入库（存到库/存到 vault/入库/保存这份/记住这篇文章/retain this paper|document），或者陈述、保存一条结论、心得、规范、经验。信号词：记住、记一下、保存、沉淀、写进记忆、别弄丢了、入库、存到库里、帮我存一下。注意：问句（为什么/怎么/应该怎么说）不是在陈述结论；「翻一遍/找出/列出我已经存的…再综合/总结」是读取已有记忆，属于 memory_query，即使句中带 vault、论文等词。",
       memory_query: "从记忆库检索或归纳已存的事实：召回（recall）、回忆、翻一遍、找出/列出所有…、问「之前有没有…」「当时…是什么」「…用的角色叫什么」，以及对已存内容做综合归纳（「综合出两篇论文各自的要点」「总结一下这套方案的思路」）。也包括所有需要系统作答的开放问题：为什么（因果）、对比/比较（差异）、评估/权衡（利弊）、总结/综述（归纳）、解释一下（原理）；以及咨询做法（「我想把论文存进知识库，应该怎么说？」）——用户在问方法，没有要你立刻执行。判断要点：动作是在读取/归纳库里已有的东西，而不是把新材料存进来。容易混淆点：查询代码目录名/路径、算法模型选型（embedding 模型）虽然像知识库话题，但本质是查事实。",
       none: "这句话跟记忆库无关：寒暄、问天气、让模型改代码/重构函数。判断依据：这句话的受益者是用户当下的对话，而不是未来的记忆检索。",
@@ -262,6 +262,16 @@ export const QUESTION_COPY: Readonly<Record<JudgeQuestionId, QuestionCopy>> = {
   target_bank: {
     instructions: "已确认要执行的动作，现在选择目标记忆库。依据是每个 bank 的 description 职责描述与这条指令的语义匹配度：主知识库存论文结论与设计知识，agent 工作记忆库存会话决策与调试发现，归档库存已冻结资料。",
     criteria: {},
+  },
+  inject_decision: {
+    instructions:
+      "自动召回刚取回一批候选记忆，现在只剩一个决定：这一轮要不要把它们放进模型的上下文。你是这次调用的看门人——注入会占掉上下文、也会把注意力引到别处，所以不该给的时候要给得干脆；但该给的时候不给，模型就会重复踩同一个坑、或者重新推导已经拍板的事。\n判断依据是候选与「现在正在做什么」的关系，不是相似度分数的高低：分数衡量的是字面接近，你衡量的是有没有用。候选摘要很短，常常只能看出它在讲哪个对象；拿不准「讲的是不是同一件事」时，看任务上下文里当前动作的对象与阶段。\n还有一个成本要算：这一轮已经注入过几次（injected_this_session）说明模型多半已经在用那些记忆，重复注入没有增量。",
+    criteria: {
+      inject:
+        "候选里有能直接改变下一步动作的东西：踩过的坑、已经拍板的决策、实测读数、被否决的方案。典型判据是「如果模型不知道这条，它接下来会做错一件事」——例如它正要改一个已经决定不改的接口。\n当前正好卡住（报错、测试失败、行为与预期不符），而候选命中了同类问题的处理记录，或命中导致这个症状的历史根因。\n用户刚派下新任务，候选里有它的前置约束：不许动的文件、必须遵守的流程、这个项目上已经定过的术语。\n候选补上了模型此刻缺、且它自己推不出来的那块事实。",
+      skip:
+        "关键词撞车：候选与查询共享术语，讲的却是另一件事——代码里的 model 与机器学习模型、项目名里的 graph 与图算法、库名里的 memory 与记忆库本身。\n模型正在依据同一条记忆工作：本轮或上一步的回执里已经出现过它的结论，再注入只是复读，还会占掉本该给新信息的注意力。\n与当前动作无关：候选讲的是另一个项目、另一条任务线，纯属被字面命中。\n候选只有操作流水账：「用户要求把 X 入库」「记得保留名字 Y」「用户希望记住这条」这类元信息，不是知识。\n这是裸关键词的宽召回，一条都套不上当前动作——这一轮宁可不给，也不要塞一堆边缘相关的东西。",
+    },
   },
 };
 
@@ -611,6 +621,82 @@ async function askChoice(
 
 function record(questionId: string, answer: JudgeAnswer): JudgeDecision {
   return { questionId, option: answer.choice, confidence: answer.confidence };
+}
+
+export interface InjectionCandidate {
+  readonly index: number;
+  readonly bank: string;
+  readonly type: string | null;
+  readonly summary: string;
+}
+
+export interface InjectionInput {
+  /** 触发点：prompt / turn-end / interval。turn-end 是误注入高发区，判据也据此校准。 */
+  readonly trigger: string;
+  readonly query: string;
+  readonly taskContext: string | null;
+  /** 本会话已经注入过几次：说明模型多半已在用那些记忆，重复注入没有增量。 */
+  readonly injectedThisSession: number;
+  readonly candidates: readonly InjectionCandidate[];
+  /** 最高分，只用于判定失灵时回落，不参与判定本身。 */
+  readonly topScore: number | null;
+}
+
+export interface InjectionDecision {
+  readonly inject: boolean;
+  readonly confidence: number;
+  /** judge：判定生效；fallback：判定缺失、歧义或关闭时按保守默认处理。 */
+  readonly basis: "judge" | "fallback";
+}
+
+export interface InjectionConfig {
+  readonly recallInjectJudge: boolean;
+  readonly recallInjectMinConfidence: number;
+}
+
+/**
+ * 判定失灵时一律放行而不是拦截：召回的候选已经过相似度筛选与重排，注入是它们唯一
+ * 的用处；judge 抖动一次就把它们全丢掉，等于把一个还不错的默认行为换成召回全灭。
+ * 只有 judge 明确说 skip 才拦。
+ */
+export async function decideInjection(
+  input: InjectionInput,
+  config: InjectionConfig,
+  env: ExecutionEnv,
+  judgePort: JudgePort,
+  overrides?: JudgeOverrides,
+): Promise<InjectionDecision> {
+  if (!config.recallInjectJudge || input.candidates.length === 0) {
+    return { inject: input.candidates.length > 0, confidence: 1, basis: "fallback" };
+  }
+
+  const step: DecomposedStep = { command: input.query, payload: null, file: null, target: null };
+  const focusFacts: Record<string, JsonValue> = {
+    trigger: input.trigger,
+    query: input.query,
+    task_context: input.taskContext,
+    injected_this_session: input.injectedThisSession,
+    candidates: input.candidates.map((candidate) => ({
+      index: candidate.index,
+      bank: candidate.bank,
+      type: candidate.type,
+      summary: candidate.summary,
+    })),
+    candidate_scores: input.topScore === null ? [] : [input.topScore],
+  };
+
+  try {
+    const answer = await askChoice("inject_decision", step, [], env, judgePort, focusFacts, overrides);
+    // 没把握时不改判方向，只交回调用方按保守默认走：硬把它算成 skip，等于让一个
+    // 边界分数决定整轮有没有记忆可用。
+    if (answer.confidence < config.recallInjectMinConfidence) {
+      return { inject: true, confidence: answer.confidence, basis: "fallback" };
+    }
+    return { inject: answer.choice === "inject", confidence: answer.confidence, basis: "judge" };
+  } catch {
+    // 自动召回是加分项（INV-7）：判定挂了按默认注入，绝不把异常抛进这一轮。
+    return { inject: true, confidence: 0, basis: "fallback" };
+  }
 }
 
 function optionMap<Option extends string>(
