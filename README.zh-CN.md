@@ -14,6 +14,7 @@
    - `hindsight://<bank>/facts/<id>`：单条事实详情与上下文。
    - `hindsight://<bank>/knowledge-base/pages/<id>`：结构化知识页。
    - `hindsight://<bank>/mental-models/<id>`：心智模型正文与演化。
+   - `hindsight://<bank>/attachments/<id>.png`：原生二进制图片流（由 `locate` 钩子自动从远端拉取落盘并提供物理路径，支持宿主 `read` 工具无缝解码真实图像）。
    - `hindsight://<bank>/operations/<id>`：异步作业执行状态与进度追踪。
    - `hindsight://queue`：离线重试队列总览与故障排查。
    - `hindsight://plugin/config`：当前生效的全局与各 bank 运行配置。

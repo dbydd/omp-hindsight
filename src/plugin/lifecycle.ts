@@ -162,19 +162,12 @@ export function registerLifecycle(pi: ExtensionAPI): void {
     const config = runtime.config;
     if (!triggerSwitches(config).turnEnd) return;
     if (!recallAllowed(ctx, config)) return;
-    // 终止轮必须在任何 await 之前同步拦下。
-    //
-    // 这里不能用 ctx.isIdle()：turn_end 由 agent loop 还在运行时同步抛出，此刻
-    // isStreaming 恒为 true，isIdle() 永远是 false。真正的风险在后面——放行后
-    // performAdaptiveRecall 是几秒的网络往返（查询构建 + Judge 判定 + 检索），
-    // await 期间没有工具调用的终止轮会让宿主 loop 自己跑到 agent_end 进入 idle；
-    // recall 回来再 sendMessage(deliverAs:"aside")，宿主对 idle 中收到的 aside 走
-    // #promptAgentInitiatedMessage，直接以记忆为输入自启一个新 turn，表现为
-    // 「任务结束却被记忆唤醒多干一轮」。
-    //
-    // 判据用事件自带的 toolResults：非空表示这一轮执行过工具、loop 必将带着
-    // tool result 继续，aside 会被同一个 run 在步骤边界拾取；为空就是终止轮
-    // （普通文本收尾，或 aborted/error——后两者同样没有继续的步骤可喂）。
+    // 终止轮必须在任何 await 之前同步拦下：
+    // 1. 如果当前助理消息不包含任何新的 toolCall，说明模型已经给出了最终回复，
+    //    loop 在输出该消息后就会直接 agent_end 结束交互。此时做召回模型既无法在
+    //    当前回复中消费，几秒网络往返后投递还会把已 idle 的会话炸醒。
+    // 2. event.toolResults 为空表示这一轮连历史工具都没跑（纯文本开局或中止）。
+    if (!hasToolCalls(event.message)) return;
     if (event.toolResults.length === 0) return;
 
     try {
@@ -270,6 +263,16 @@ function triggerSwitches(config: HindsightConfig): { readonly prompt: boolean; r
     prompt: listed.has("prompt"),
     turnEnd: listed.has("turn-end") || listed.has("interval"),
   };
+}
+
+/** 检查助理消息是否包含未决的工具调用块。 */
+function hasToolCalls(message: unknown): boolean {
+  if (typeof message !== "object" || message === null) return false;
+  const content = (message as { content?: unknown }).content;
+  if (!Array.isArray(content)) return false;
+  return content.some(
+    (block) => typeof block === "object" && block !== null && (block as { type?: unknown }).type === "toolCall",
+  );
 }
 
 /**

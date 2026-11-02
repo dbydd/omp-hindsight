@@ -14,6 +14,7 @@
    - `hindsight://<bank>/facts/<id>`: Atomic fact details and context.
    - `hindsight://<bank>/knowledge-base/pages/<id>`: Structured knowledge page.
    - `hindsight://<bank>/mental-models/<id>`: Mental model text and evolutionary logs.
+   - `hindsight://<bank>/attachments/<id>.png`: Native binary image stream (retrieved from remote and cached locally via the `locate` hook, allowing multimodal models to inspect diagram bytes directly via standard `read`).
    - `hindsight://<bank>/operations/<id>`: Async job progress and processing status.
    - `hindsight://queue`: Local offline retry queue overview and inspection.
    - `hindsight://plugin/config`: Active global and per-bank runtime configuration.

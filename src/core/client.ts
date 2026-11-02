@@ -465,6 +465,35 @@ export class HindsightHttpClient {
     });
   }
 
+  // ── 附件字节 ──────────────────────────────────────────────
+
+  /**
+   * 获取入库多模态文档时保留的图片或文件附件原始字节。
+   * 404 返回 null，其他网络/权限错误抛出。
+   */
+  async getAttachment(
+    bank: string,
+    attachmentId: string,
+    options: CallOptions = {},
+  ): Promise<{ data: Buffer; mediaType: string } | null> {
+    return this.call("getAttachment", options.signal, async () => {
+      const response = await sdk.getBankAttachment({
+        client: this.engine,
+        path: { bank_id: bank, attachment_id: attachmentId },
+        signal: options.signal,
+      });
+      if (response.response?.status === 404) return null;
+      if (response.data === undefined) {
+        throw errorForStatus("getAttachment", response.response?.status ?? null, "附件响应没有数据载荷");
+      }
+      const blob = response.data as unknown as Blob;
+      const arrayBuffer = await blob.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      const mediaType = response.response?.headers?.get("content-type") ?? "image/png";
+      return { data: buffer, mediaType };
+    });
+  }
+
   // ── 事实 ──────────────────────────────────────────────────
 
   /** 单条事实：列表端点只给行摘要，证据终端要的是正文、上下文与来源锚点。 */

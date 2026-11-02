@@ -261,6 +261,7 @@ export interface RuntimeOptions {
 
 export class HindsightPluginRuntime {
   readonly config: HindsightConfig;
+  readonly cwd: string;
   readonly promptPack: PromptPack;
   readonly client: HindsightHttpClient;
   readonly queue: RetryQueue;
@@ -275,6 +276,7 @@ export class HindsightPluginRuntime {
 
   constructor(options: RuntimeOptions) {
     this.config = options.config;
+    this.cwd = options.cwd;
     this.promptPack = options.promptPack ?? getBuiltinPromptPack();
     this.client = httpClientFromConfig(options.config);
     this.queue = new RetryQueue({

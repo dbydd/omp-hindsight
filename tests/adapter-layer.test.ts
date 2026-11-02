@@ -249,6 +249,62 @@ describe("plugin/url: internal URL 协议注册与解析", () => {
     expect(leaves.length).toBeGreaterThan(0);
     expect(leaves[0]?.url).toBe("hindsight://plugin/operations/1");
   });
+
+  test("locate 钩子：非附件虚拟路由返回 null，附件路由落盘二进制流并返回物理路径", async () => {
+    registerHindsightUrls();
+    const parsed = parseConfig(
+      {
+        baseUrl: "http://127.0.0.1:8888",
+        banks: [{ id: "vault", bankId: "vault-id", access: "read-write", retain: { mode: "manual", scopes: "per_tag" } }],
+      },
+      { role: "main" },
+    );
+    if (!parsed.ok) throw new Error("Config parse failed");
+    const runtime = new HindsightPluginRuntime({
+      cwd: tempDir,
+      config: parsed.config,
+      paths: { global: "", project: "" },
+      loaded: [],
+      mainSessionId: "sess-main",
+    });
+
+    // Mock runtime.client.getAttachment
+    const mockBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]); // PNG magic bytes
+    (runtime.client as any).getAttachment = async (_bank: string, id: string) => {
+      if (id === "existing-att") {
+        return { data: mockBytes, mediaType: "image/png" };
+      }
+      return null;
+    };
+    setRuntime(runtime);
+
+    const mainCtx = { sessionId: "sess-main", cwd: tempDir } as unknown as ResolveContext;
+
+    // 1. 普通虚拟路径必须返回 null，绝不被误判为物理文件
+    const nonAttLoc = await HINDSIGHT_PROTOCOL_HANDLER.locate!(parseInternalUrl("hindsight://vault/facts/123"), mainCtx);
+    expect(nonAttLoc).toBeNull();
+
+    // 2. 真实附件拉取并落盘
+    const attLoc = await HINDSIGHT_PROTOCOL_HANDLER.locate!(parseInternalUrl("hindsight://vault/attachments/existing-att.png"), mainCtx);
+    expect(attLoc).not.toBeNull();
+    expect(attLoc).toContain("existing-att.png");
+
+    // 验证文件在磁盘上确实写入了真实的 PNG 字节
+    const readBack = await Bun.file(attLoc!).bytes();
+    expect(readBack.byteLength).toBe(mockBytes.length);
+    expect(readBack[0]).toBe(0x89);
+
+    // 3. resolve 访问该附件时，带上 sourcePath 指向物理缓存
+    const attRes = await HINDSIGHT_PROTOCOL_HANDLER.resolve(parseInternalUrl("hindsight://vault/attachments/existing-att.png"), mainCtx);
+    expect(attRes.sourcePath).toBe(attLoc!);
+    expect(attRes.content).toContain("# 附件：existing-att.png");
+
+    // 4. 不存在的附件返回 null 并输出友好引导
+    const missingLoc = await HINDSIGHT_PROTOCOL_HANDLER.locate!(parseInternalUrl("hindsight://vault/attachments/missing-att.png"), mainCtx);
+    expect(missingLoc).toBeNull();
+    const missingRes = await HINDSIGHT_PROTOCOL_HANDLER.resolve(parseInternalUrl("hindsight://vault/attachments/missing-att.png"), mainCtx);
+    expect(missingRes.content).toContain("图像未入库");
+  });
 });
 
 describe("plugin/recall: 自适应提取与防抖", () => {

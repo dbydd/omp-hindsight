@@ -10,12 +10,16 @@
 import {
   InternalUrlRouter,
   parseInternalUrl,
+  extractUriScheme,
   type InternalResource,
   type InternalUrl,
   type ProtocolHandler,
   type ResolveContext,
 } from "@oh-my-pi/pi-coding-agent/internal-urls";
 import type { MentalModelResponse } from "@vectorize-io/hindsight-client";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { join, extname } from "node:path";
+import { tmpdir } from "node:os";
 import { HindsightRequestError } from "../core/client.ts";
 import { maskSecret, readApiKey } from "../core/config.ts";
 import { backingMentalModelId } from "../core/ops.ts";
@@ -44,10 +48,86 @@ const SCHEME = "hindsight";
 
 export const HINDSIGHT_PROTOCOL_HANDLER: ProtocolHandler = {
   scheme: SCHEME,
-  spec: { backing: "virtual", selectors: "lines", immutable: true },
+  spec: { backing: "file", selectors: "lines", immutable: true, imageQuestion: true },
   resolve: (url, context) => resolveHindsightUrl(url, context),
+  locate: (url, context) => locateHindsightUrl(url, context),
   enumerate: (url, context) => enumerateHindsightUrl(url, context),
 };
+
+/**
+ * 将远端附件落盘到本地缓存文件。已缓存则直接复用。
+ * 返回落盘后的绝对文件路径与 mediaType，远端 404 返回 null。
+ */
+async function resolveAttachmentCacheFile(
+  runtime: HindsightPluginRuntime,
+  bank: BankConfig,
+  rawId: string,
+  cwd: string,
+): Promise<{ filePath: string; mediaType: string } | null> {
+  const dotIndex = rawId.lastIndexOf(".");
+  const attachmentId = dotIndex > 0 ? rawId.slice(0, dotIndex) : rawId;
+  const extension = dotIndex > 0 ? rawId.slice(dotIndex) : ".png";
+
+  // 优先存工作区 .omp/cache/hindsight/attachments，失败则回落系统临时目录
+  const baseDir = join(cwd, ".omp", "cache", "hindsight", "attachments", bank.id);
+  const targetPath = join(baseDir, `${attachmentId}${extension}`);
+
+  try {
+    const existing = await readFile(targetPath);
+    if (existing.length > 0) {
+      return { filePath: targetPath, mediaType: `image/${extension.replace(/^\./, "")}` };
+    }
+  } catch {
+    // 文件不存在，继续向远端拉取
+  }
+
+  let fetched: { data: Buffer; mediaType: string } | null;
+  try {
+    fetched = await runtime.client.getAttachment(bank.bankId, attachmentId);
+  } catch {
+    return null;
+  }
+  if (fetched === null) return null;
+
+  try {
+    await mkdir(baseDir, { recursive: true });
+    await writeFile(targetPath, fetched.data);
+    return { filePath: targetPath, mediaType: fetched.mediaType };
+  } catch {
+    // 工作区只读时，回退到临时目录
+    const fallbackDir = join(tmpdir(), "omp-hindsight", "attachments", bank.id);
+    const fallbackPath = join(fallbackDir, `${attachmentId}${extension}`);
+    await mkdir(fallbackDir, { recursive: true });
+    await writeFile(fallbackPath, fetched.data);
+    return { filePath: fallbackPath, mediaType: fetched.mediaType };
+  }
+}
+
+/**
+ * locate 钩子：专门接管 `:bank/attachments/:id` 的物理文件定位。
+ * 对非附件虚拟路由一律返回 null，宿主 router.target 自动回退到 resolve() 渲染虚拟 Markdown。
+ */
+async function locateHindsightUrl(url: InternalUrl, context?: ResolveContext): Promise<string | null> {
+  const runtime = getRuntime();
+  if (runtime === undefined) return null;
+
+  const virtualPath = canonicalAliasPath(virtualPathOf(url));
+  const matched = matchPath(virtualPath.replace(LEGACY_KNOWLEDGE_BASE, "$1/knowledge-base"));
+  if (matched === null || matched.route.pattern !== ":bank/attachments/:id") {
+    return null;
+  }
+
+  const request = requestFor(url, matched, runtime, context);
+  const bank = bankOf(request);
+  if (bank === undefined) return null;
+
+  const rawId = request.params.id ?? "";
+  if (rawId.length === 0) return null;
+
+  const cwd = context?.cwd ?? runtime.cwd;
+  const cached = await resolveAttachmentCacheFile(runtime, bank, rawId, cwd);
+  return cached?.filePath ?? null;
+}
 
 /** 进程内只注册一次：handler 无状态，跨会话共用。 */
 export function registerHindsightUrls(): void {
@@ -866,6 +946,27 @@ async function attachmentLeaf(request: ViewRequest): Promise<InternalResource> {
   const bank = bankOf(request);
   if (bank === undefined) return unknownBank(request);
   const id = request.params.id ?? "";
+  const cwd = request.context?.cwd ?? request.runtime.cwd;
+  const cached = await resolveAttachmentCacheFile(request.runtime, bank, id, cwd);
+
+  if (cached !== null) {
+    return {
+      url: request.url.href,
+      content: [
+        `# 附件：${id}`,
+        "",
+        `- Bank: \`${bank.id}\``,
+        `- 门牌：\`${request.path}\``,
+        `- 本地缓存：\`${cached.filePath}\``,
+        `- Media Type: \`${cached.mediaType}\``,
+        `- 提示：该附件已成功拉取原始二进制流，已通过 \`locate\` 提供给宿主 read 工具作为真实图像载荷。`,
+        "",
+      ].join("\n"),
+      contentType: "text/markdown",
+      sourcePath: cached.filePath,
+    };
+  }
+
   return resource(
     request.url,
     [
