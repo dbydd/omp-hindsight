@@ -1,12 +1,13 @@
 # 资源树路由
 
 > 由 `ssot/gen.ts` 从 `ssot/spec.ts`（SPEC_VERSION 1.0.0）生成，不要手改。
-> 源切片：`PATH_ROUTES`
+> 源切片：`PATH_ROUTES`、`PATH_PREFIX_ALIASES`
 
 
 | 模式 | 形态 | 可变性 | 支撑端点 | 可见范围 |
 | --- | --- | --- | --- | --- |
 | `hindsight://` | 目录 | 可变 | `/banks` | 全部 |
+| `hindsight://:bank` | 目录 | 可变 | 本地状态 | 全部 |
 | `hindsight://:bank/documents` | 目录 | 可变 | `/banks/:bank/documents` | 全部 |
 | `hindsight://:bank/documents/:doc` | 叶 | 不可变 | `/banks/:bank/documents/:doc` | 全部 |
 | `hindsight://:bank/documents/:doc/chunks` | 目录 | 不可变 | `/banks/:bank/documents/:doc/chunks` | 全部 |
@@ -35,3 +36,12 @@
 | `hindsight://plugin/operations` | 目录 | 可变 | 本地状态 | 主会话 |
 | `hindsight://plugin/operations/:seq` | 叶 | 不可变 | 本地状态 | 主会话 |
 | `hindsight://plugin/config` | 叶 | 可变 | 本地状态 | 主会话 |
+
+## 前缀别名
+
+别名前缀只吞第一段：后跟 bank 短名时整段等价于 `hindsight://<bank>/...`；只写前缀（可带结尾斜杠与查询串）时等价于根。单数 `vault` 不是别名，它可能是配置里的真实 bank 短名，按原样解析。
+
+| 别名前缀 | 带 bank 的写法 |
+| --- | --- |
+| `hindsight://banks` | `hindsight://banks/<bank>/...` → `hindsight://<bank>/...` |
+| `hindsight://vaults` | `hindsight://vaults/<bank>/...` → `hindsight://<bank>/...` |

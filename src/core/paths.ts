@@ -13,10 +13,15 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve, sep } from "node:path";
-import { PATH_ROUTES, type PathRoute } from "../../ssot/spec.ts";
+import { PATH_PREFIX_ALIASES, PATH_ROUTES, type PathRoute } from "../../ssot/spec.ts";
 import type { InternalPath, PathMappingConfig } from "./types.ts";
 
 const SCHEME = "hindsight://";
+
+const ALIAS_PREFIXES: ReadonlySet<string> = new Set<string>(PATH_PREFIX_ALIASES);
+const ALIAS_PREFIX_PATTERN = new RegExp(
+  `^(?:${PATH_PREFIX_ALIASES.join("|")})(?=[/?#]|$)\\/?`,
+);
 
 export interface MatchedPath {
   readonly route: PathRoute;
@@ -36,6 +41,8 @@ export interface LocalFileResolution {
 interface CompiledRoute {
   readonly route: PathRoute;
   readonly segments: readonly string[];
+  /** 允许吃多段的参数名；其余参数段只占一段。 */
+  readonly greedy: ReadonlySet<string>;
   readonly staticCount: number;
   readonly order: number;
 }
@@ -45,6 +52,7 @@ const COMPILED_ROUTES: readonly CompiledRoute[] = PATH_ROUTES.map((route, order)
   return {
     route,
     segments,
+    greedy: new Set(route.greedy ?? []),
     staticCount: segments.filter((segment) => !segment.startsWith(":")).length,
     order,
   };
@@ -64,25 +72,18 @@ export function matchPath(input: string): MatchedPath | null {
   const rawPath = queryIndex >= 0 ? withoutFragment.slice(0, queryIndex) : withoutFragment;
   const query = parseQuery(queryIndex >= 0 ? withoutFragment.slice(queryIndex + 1) : "");
 
-  const segments = rawPath
-    .split("/")
-    .filter((segment) => segment.length > 0)
-    .map((segment) => {
-      try {
-        return decodeURIComponent(segment);
-      } catch {
-        // 非法 % 转义按字面量处理，路由照常匹配，不因为一个字符把整条路径判死。
-        return segment;
-      }
-    });
+  const rawSegments = rawPath.split("/").filter((segment) => segment.length > 0);
+  const segments = rawSegments.map(decodeSegment);
+  const alias = stripPrefixAlias(rawSegments, segments);
+  const canonicalRawPath = alias.stripped ? alias.raw.join("/") : rawPath;
 
   for (const compiled of COMPILED_ROUTES) {
-    const params = matchSegments(compiled.segments, segments);
+    const params = matchSegments(compiled.segments, alias.segments, compiled.greedy);
     if (params === null) continue;
     const bank = params.bank;
     return {
       route: compiled.route,
-      path: `${SCHEME}${rawPath.replace(/^\/+/, "")}` as InternalPath,
+      path: `${SCHEME}${canonicalRawPath.replace(/^\/+/, "")}` as InternalPath,
       params,
       query,
       bank: typeof bank === "string" && bank.length > 0 ? bank : null,
@@ -91,9 +92,49 @@ export function matchPath(input: string): MatchedPath | null {
   return null;
 }
 
+/**
+ * 适配层在 `matchPath` 之前还要认 `kb` 与 attachments 这类非 SSOT 写法，
+ * 因此提供一份字符串级的前缀归一；真正的路由匹配仍只由 `matchPath` 决定。
+ */
+export function canonicalAliasPath(input: string): string {
+  const trimmed = input.trim();
+  const schemeIndex = trimmed.indexOf(SCHEME);
+  const prefix = schemeIndex >= 0 ? trimmed.slice(0, schemeIndex + SCHEME.length) : "";
+  const body = (schemeIndex >= 0 ? trimmed.slice(schemeIndex + SCHEME.length) : trimmed).replace(
+    /^\/+/,
+    "",
+  );
+  return `${prefix}${body.replace(ALIAS_PREFIX_PATTERN, "")}`;
+}
+
+function decodeSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    // 非法 % 转义按字面量处理，路由照常匹配，不因为一个字符把整条路径判死。
+    return segment;
+  }
+}
+
+/**
+ * `banks` / `vaults` 前缀别名只吞第一段，其余段原样留给路由；只写前缀时
+ * 归一成根。返回的 `raw` 与 `segments` 一一对应，门牌据此重建。
+ */
+function stripPrefixAlias(
+  rawSegments: readonly string[],
+  segments: readonly string[],
+): { readonly raw: readonly string[]; readonly segments: readonly string[]; readonly stripped: boolean } {
+  const head = segments[0];
+  if (head === undefined || !ALIAS_PREFIXES.has(head)) {
+    return { raw: rawSegments, segments, stripped: false };
+  }
+  return { raw: rawSegments.slice(1), segments: segments.slice(1), stripped: true };
+}
+
 function matchSegments(
   pattern: readonly string[],
   segments: readonly string[],
+  greedy: ReadonlySet<string>,
   patternIndex = 0,
   segmentIndex = 0,
   params: Record<string, string> = {},
@@ -106,17 +147,27 @@ function matchSegments(
 
   if (!part.startsWith(":")) {
     if (segments[segmentIndex] !== part) return null;
-    return matchSegments(pattern, segments, patternIndex + 1, segmentIndex + 1, params);
+    return matchSegments(pattern, segments, greedy, patternIndex + 1, segmentIndex + 1, params);
   }
 
+  const name = part.slice(1);
   // 后面的每个模式段至少还要占一段，剩下的才是这个参数段能吞的上限。
   const reserved = pattern.length - patternIndex - 1;
   const longest = segments.length - segmentIndex - reserved;
+  if (!greedy.has(name)) {
+    if (longest < 1) return null;
+    const value = segments[segmentIndex];
+    if (value === undefined) return null;
+    return matchSegments(pattern, segments, greedy, patternIndex + 1, segmentIndex + 1, {
+      ...params,
+      [name]: value,
+    });
+  }
   for (let take = longest; take >= 1; take -= 1) {
     const value = segments.slice(segmentIndex, segmentIndex + take).join("/");
-    const next = matchSegments(pattern, segments, patternIndex + 1, segmentIndex + take, {
+    const next = matchSegments(pattern, segments, greedy, patternIndex + 1, segmentIndex + take, {
       ...params,
-      [part.slice(1)]: value,
+      [name]: value,
     });
     if (next !== null) return next;
   }

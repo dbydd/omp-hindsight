@@ -8,12 +8,18 @@
  *
  * Markdown 里的图片引用同理：引用位置换成真正的图像块，正文按原顺序保留，
  * 这样服务端看到的是“文字 + 图片”的多模态输入，而不是一段指向不存在文件的语法。
+ *
+ * 图注不能靠图像块带过去：服务端把每个图像块统一还原成 `⟦hs-att:<id>⟧`，alt 只剩
+ * 裸 id。所以切图时把原始 alt 连同附件门牌写回正文（`![图注](hindsight://<bank>/
+ * attachments/<id>.png)`），图注与附件在库内保持一条真实、可解析的引用。
  */
 
 import { isUtf8 } from "node:buffer";
+import { createHash } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, resolve } from "node:path";
 import type { ContentBlock } from "@vectorize-io/hindsight-client";
+import { buildPath } from "./paths.ts";
 import type { RetainPayloadKind } from "./types.ts";
 
 export interface RetainPayload {
@@ -140,6 +146,8 @@ interface ReferenceMatch {
   readonly index: number;
   readonly length: number;
   readonly rawPath: string;
+  /** 原始图注（alt）；空串表示作者没写。 */
+  readonly alt: string;
 }
 
 /** 围栏代码块里的 `![...]` 只是示例文本，不能当引用处理；记录区间供匹配时跳过。 */
@@ -189,7 +197,15 @@ function resolveReference(rawPath: string, baseDir: string | undefined): string 
   return resolve(baseDir, decoded);
 }
 
-async function attachmentBlock(absolutePath: string, sourceLabel: string): Promise<ContentBlock> {
+interface AttachmentInsertion {
+  readonly block: ContentBlock;
+  /** 服务端占位符 `⟦hs-att:<id>⟧` 里的短 id：字节 sha256 的前 12 位。 */
+  readonly shortId: string;
+  /** 只有图片有图注这回事：PDF 之类的文件引用不写 `![](...)` 图片语法。 */
+  readonly image: boolean;
+}
+
+async function attachmentBlock(absolutePath: string, sourceLabel: string): Promise<AttachmentInsertion> {
   let buffer: Buffer;
   try {
     buffer = await readFile(absolutePath);
@@ -198,26 +214,45 @@ async function attachmentBlock(absolutePath: string, sourceLabel: string): Promi
     throw new Error(`引用的文件不存在或不可读：${absolutePath}（来自 ${sourceLabel}；${message}）`);
   }
   const detected = assertAttachment(buffer, absolutePath);
-  return detected.form === "image"
-    ? imageBlock(buffer, detected.mediaType)
-    : fileBlock(buffer, detected.mediaType, absolutePath);
+  return {
+    block:
+      detected.form === "image"
+        ? imageBlock(buffer, detected.mediaType)
+        : fileBlock(buffer, detected.mediaType, absolutePath),
+    // 服务端占位符里的短 id 就是字节 sha256 的前 12 位（attachment_content.SHORT_ID_LENGTH）。
+    shortId: createHash("sha256").update(buffer).digest("hex").slice(0, 12),
+    image: detected.form === "image",
+  };
 }
 
 /**
- * 把正文按引用位置切成 [文本, 图像, 文本, …]，引用标记本身从文本里移除。
+ * 图注文本：原始 alt 换成指向附件门牌的图片引用。
+ *
+ * 服务端只保留图像块的位置，alt 会退化成裸 id；把这条引用写进正文，库内的文档
+ * 才同时留住「图号—图注—附件」三者。占位符与它并存，渲染时按 id 去重。
+ */
+function captionBlock(alt: string, shortId: string, bank: string): ContentBlock {
+  const label = alt.replace(/\s+/g, " ").trim();
+  const attachment = buildPath(":bank/attachments/:id", { bank, id: `${shortId}.png` });
+  return textBlock(`\n\n![${label}](${attachment})\n\n`);
+}
+
+/**
+ * 把正文按引用位置切成 [文本, 图像, 文本, …]，引用标记本身换成图注引用。
  * 没有可解析的引用时返回 null，由调用方回退成纯字符串。
  */
 async function buildReferenceBlocks(
   text: string,
   baseDir: string | undefined,
   sourceLabel: string,
+  bank: string,
 ): Promise<ContentBlock[] | null> {
   const fences = fencedRanges(text);
   const references: ReferenceMatch[] = [];
   for (const match of text.matchAll(IMAGE_REFERENCE)) {
     const index = match.index ?? 0;
     if (isFenced(index, fences)) continue;
-    references.push({ index, length: match[0].length, rawPath: match[2] ?? "" });
+    references.push({ index, length: match[0].length, rawPath: match[2] ?? "", alt: match[1] ?? "" });
   }
   if (references.length === 0) return null;
 
@@ -226,10 +261,13 @@ async function buildReferenceBlocks(
   for (const reference of references) {
     const absolutePath = resolveReference(reference.rawPath, baseDir);
     if (absolutePath === null) continue;
-    const block = await attachmentBlock(absolutePath, sourceLabel);
+    const attachment = await attachmentBlock(absolutePath, sourceLabel);
     const segment = text.slice(cursor, reference.index);
     if (segment.length > 0) blocks.push(textBlock(segment));
-    blocks.push(block);
+    if (attachment.image && reference.alt.trim().length > 0) {
+      blocks.push(captionBlock(reference.alt, attachment.shortId, bank));
+    }
+    blocks.push(attachment.block);
     cursor = reference.index + reference.length;
   }
   if (blocks.length === 0) return null;
@@ -309,7 +347,9 @@ async function buildAssetBlocks(
     if (segment.length > 0) blocks.push(textBlock(segment));
     for (const number of paragraphFigures) {
       const absolutePath = selected.get(number);
-      if (absolutePath !== undefined) blocks.push(await attachmentBlock(absolutePath, sourceLabel));
+      if (absolutePath !== undefined) {
+        blocks.push((await attachmentBlock(absolutePath, sourceLabel)).block);
+      }
     }
     cursor = paragraphEnd;
   }
@@ -322,7 +362,7 @@ async function buildAssetBlocks(
 // 对外接口
 // ─────────────────────────────────────────────────────────────
 
-export async function buildRetainPayloadFromFile(filePath: string): Promise<RetainPayload> {
+export async function buildRetainPayloadFromFile(filePath: string, bank: string): Promise<RetainPayload> {
   const absolutePath = resolve(filePath);
   const buffer = await readBytes(absolutePath);
   const detected = detectForm(buffer, absolutePath);
@@ -339,24 +379,27 @@ export async function buildRetainPayloadFromFile(filePath: string): Promise<Reta
   if (text.length === 0) return { content: "", payloadKind: "file" };
 
   const baseDir = dirname(absolutePath);
-  const referenced = await buildReferenceBlocks(text, baseDir, absolutePath);
+  const referenced = await buildReferenceBlocks(text, baseDir, absolutePath, bank);
   const blocks = referenced ?? (await buildAssetBlocks(text, baseDir, absolutePath));
   if (blocks !== null) return { content: blocks, payloadKind: "multimodal" };
   return { content: text, payloadKind: "file" };
 }
 
-export async function buildInlinePayload(text: string, baseDir?: string): Promise<RetainPayload> {
+export async function buildInlinePayload(text: string, bank: string, baseDir?: string): Promise<RetainPayload> {
   if (text.length === 0) return { content: "", payloadKind: "inline" };
-  const blocks = await buildReferenceBlocks(text, baseDir, "inline text");
+  const blocks = await buildReferenceBlocks(text, baseDir, "inline text", bank);
   if (blocks !== null) return { content: blocks, payloadKind: "multimodal" };
   return { content: text, payloadKind: "inline" };
 }
 
-export async function buildRetainPayloadFromStep(step: {
-  payload: string | null;
-  file: string | null;
-}): Promise<RetainPayload | null> {
-  if (step.file !== null) return buildRetainPayloadFromFile(step.file);
-  if (step.payload !== null) return buildInlinePayload(step.payload);
+export async function buildRetainPayloadFromStep(
+  step: {
+    payload: string | null;
+    file: string | null;
+  },
+  bank: string,
+): Promise<RetainPayload | null> {
+  if (step.file !== null) return buildRetainPayloadFromFile(step.file, bank);
+  if (step.payload !== null) return buildInlinePayload(step.payload, bank);
   return null;
 }

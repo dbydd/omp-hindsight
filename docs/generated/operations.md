@@ -11,6 +11,7 @@
 | `read` | 读 | bank | — | `op.read` | — |
 | `retain` | 写 | bank | `hindsight://{bank}/documents/{id}`<br>`hindsight://{bank}/operations/{id}` | `op.retain` | `/retain` |
 | `document` | 读 | bank | `hindsight://{bank}/documents/{id}` | `op.document` | `/document` |
+| `document.delete` | 写 | bank | `hindsight://{bank}/documents` | `op.document.delete` | — |
 | `entities` | 读 | bank | `hindsight://{bank}/entities?q=` | `op.entities` | `/entities` |
 | `knowledge_base` | 写 | bank | `hindsight://{bank}/knowledge-base/pages/{id}` | `op.knowledge_base` | `/knowledge-base` |
 | `mental_model` | 写 | bank | `hindsight://{bank}/mental-models/{id}` | `op.mental_model` | `/mental-models` |

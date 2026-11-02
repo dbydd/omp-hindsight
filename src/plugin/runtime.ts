@@ -1,8 +1,8 @@
 /**
  * 插件运行时：配置发现、客户端与队列装配、健康探测、运维记录。
  *
- * 配置两级：全局 `~/.omp/agent/hindsight-omp.json`（`.jsonc` 后缀亦可，宽容解析）与项目
- * `<cwd>/.omp/hindsight-omp.json`（同上），逐键深合并（项目覆盖全局）后交给 core 的
+ * 配置两级：全局 `~/.omp/agent/omp-hindsight.json`（支持 `omp-hindsight.jsonc` 及旧名 `hindsight-omp.json` 兼容）与项目
+ * `<cwd>/.omp/omp-hindsight.json`（同上），逐键深合并（项目覆盖全局）后交给 core 的
  * `parseConfig` 校验。两份都不存在不是错误：插件静止，工具与资源树都不注册。
  */
 
@@ -38,8 +38,8 @@ export type ConfigDiscovery =
 
 export function defaultConfigPaths(cwd: string): ConfigPaths {
   return {
-    global: join(homedir(), ".omp", "agent", "hindsight-omp.json"),
-    project: join(cwd, ".omp", "hindsight-omp.json"),
+    global: join(homedir(), ".omp", "agent", "omp-hindsight.json"),
+    project: join(cwd, ".omp", "omp-hindsight.json"),
   };
 }
 
@@ -119,9 +119,27 @@ export async function loadConfig(
   role: string | null = null,
   paths: ConfigPaths = defaultConfigPaths(cwd),
 ): Promise<ConfigDiscovery> {
+  // 候选探测顺序：主名 (.json) → JSONC 扩展 (.jsonc)；
+  // 若调用方使用的是默认路径（未显式覆盖），额外兼容旧名 (hindsight-omp.json / .jsonc)
+  const defaults = defaultConfigPaths(cwd);
+  const globalCandidates = [paths.global, `${paths.global}c`];
+  if (paths.global === defaults.global) {
+    globalCandidates.push(
+      join(homedir(), ".omp", "agent", "hindsight-omp.json"),
+      join(homedir(), ".omp", "agent", "hindsight-omp.jsonc"),
+    );
+  }
+  const projectCandidates = [paths.project, `${paths.project}c`];
+  if (paths.project === defaults.project) {
+    projectCandidates.push(
+      join(cwd, ".omp", "hindsight-omp.json"),
+      join(cwd, ".omp", "hindsight-omp.jsonc"),
+    );
+  }
+
   const [globalLayer, projectLayer] = await Promise.all([
-    readLayerCandidates([paths.global, `${paths.global}c`]),
-    readLayerCandidates([paths.project, `${paths.project}c`]),
+    readLayerCandidates(globalCandidates),
+    readLayerCandidates(projectCandidates),
   ]);
 
   const unreadable: ConfigProblem[] = [];
@@ -173,7 +191,7 @@ export function describeDiscovery(discovery: ConfigDiscovery, cwd: string): stri
  * 用运行时类型会挡住 `{ id, enabled: false }` 这种合法写法。
  */
 export async function saveProjectConfig(cwd: string, patch: Readonly<Record<string, unknown>>): Promise<void> {
-  const path = join(cwd, ".omp", "hindsight-omp.json");
+  const path = join(cwd, ".omp", "omp-hindsight.json");
   const existing = await readLayer(path);
   if (existing.status === "invalid") {
     // 覆盖一份写坏的文件会丢掉用户手写的内容；报出来让人先修，写盘不在此处悄悄发生。

@@ -220,8 +220,12 @@ System One 模型的判定准确率，完全取决于系统传给它的输入状
 | **`memory_retain`** | 显式沉淀或保存一项新达成共识的架构决策、工程规范、经验总结或特定事实。（保存、记住、沉淀、记录、写入记忆） | 触发 `retain_source` |
 | **`knowledge_base`** | 面向结构化知识页（Knowledge Pages）、分类目录或 wiki 文档的增删改查。（知识页、知识库、目录树、分类文件夹、wiki 文档） | 触发 `kb_action` |
 | **`mental_model`** | 面向高阶心智模型（Mental Models）或全局用户偏好的查看、新建、刷新与删除。（心智模型、认知模型、用户偏好、长期准则） | 触发 `mm_action` |
-| **`operation_view`** | 查看后台异步写入任务的排队情况、操作进度、插件健康度，或取消任务。（任务状态、排队进度、操作历史、取消任务、重试） | 触发 `ops_action` |
+| **`operation_view`** | 查看后台异步写入任务的排队情况、操作进度、插件健康度，取消任务，或删除已入库的整份文档。（任务状态、排队进度、操作历史、取消任务、重试、删除 document） | 触发 `ops_action` |
 | **`none`** | 输入内容不属于 Hindsight 能够处理的范畴（打招呼、闲聊、询问天气），或明确撤回操作。 | 安全退出，返回无需操作 |
+
+### 术语前提：bank、vault、记忆库、库 指同一个对象
+
+`action_family` 与 `target_bank` 的题面都会附带这段术语约定：bank、vault、记忆库、库 是同一个记忆容器的不同叫法；`vault` 也可能正是配置里的一个 bank 短名，不是另一类资源。在某个 vault 里读取或归纳已存事实是 `memory_query`（recall / reflect），把新事实、结论或整份文件存进去是 `memory_retain`；`knowledge_base` 只保留给明确的知识页（page）与目录（folder）维护动作。
 
 ---
 
@@ -247,10 +251,11 @@ System One 模型的判定准确率，完全取决于系统传给它的输入状
 * **`refresh`**：根据最新入库的记忆，手动触发该模型的重新归纳与刷新（对应 `mm.refresh`）。
 * **`delete`**：注销并彻底删除指定的心智模型（对应 `mm.delete`）。
 
-#### 4. 运行与运维族细化（`ops_action`）
+#### 4. 运行与运维族细化（`operation_action`）
 * **`list`**：查看最近执行的所有异步操作列表与队列积压状态（对应 `operation.list`）。
 * **`get`**：查询指定操作 ID 的执行状态、进度或失败日志（对应 `operation.get`）。
 * **`cancel`**：取消正在排队或执行中的异步任务（对应 `operation.cancel`）。
+* **`delete_document`**：删除一份已入库的源文档，连同它抽出的记忆单元（对应 `document.delete`）。宾语是文档本身时走这里；删知识页仍走 `kb_action` 的 `page_delete`。
 
 ---
 

@@ -49,7 +49,7 @@
 | `retain_source` | `inline`<br>`reference`<br>`session` | `action_family` ∈ {memory_retain} |
 | `knowledge_base_action` | `tree`<br>`search`<br>`get`<br>`page_create`<br>`page_update`<br>`page_delete`<br>`folder_create` | `action_family` ∈ {knowledge_base} |
 | `mental_model_action` | `list`<br>`get`<br>`create`<br>`refresh`<br>`delete` | `action_family` ∈ {mental_model} |
-| `operation_action` | `list`<br>`get`<br>`cancel` | `action_family` ∈ {operation_view} |
+| `operation_action` | `list`<br>`get`<br>`cancel`<br>`delete_document` | `action_family` ∈ {operation_view} |
 | `target_bank` | 配置的 bank 列表 | `action_family` ∈ {memory_query, memory_retain, knowledge_base, mental_model, operation_view} |
 | `inject_decision` | `inject`<br>`skip` | 总是提问 |
 

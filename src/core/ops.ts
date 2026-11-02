@@ -159,6 +159,13 @@ async function runAction(
       return ok("retain", resourceBank, { receipt, paths: [resourcePath] });
     }
 
+    case "document.delete":
+      await client.deleteDocument(bankId, call.params.documentId);
+      return ok("document.delete", resourceBank, {
+        paths: [buildPath(":bank/documents", { bank: resourceBank })],
+        content: `已成功删除文档 ${call.params.documentId}，其抽取出的记忆单元与分块已随之清除。`,
+      });
+
     case "knowledge_base.tree":
       await client.getKnowledgeBaseTree(bankId);
       return ok("knowledge_base.tree", resourceBank, {
@@ -408,7 +415,7 @@ interface KnowledgeTreeNode {
  * 知识页的支撑心智模型 id 只出现在树节点上：`getKnowledgePage` 的响应没有这一项，
  * 搜索响应有但要先知道查询词。树是唯一能按节点 id 直接查到的映射，缺了就如实报不可刷新。
  */
-async function backingMentalModelId(
+export async function backingMentalModelId(
   client: HindsightHttpClient,
   bankId: string,
   nodeId: string,

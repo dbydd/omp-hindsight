@@ -1,7 +1,7 @@
 {
   "version": "1.0.0",
   "description": "Hindsight-OMP decision test dataset (external resource)",
-  "updated_at": "2026-11-01T15:39:07.366Z",
+  "updated_at": "2026-11-02",
   "decision_points": {
     "action_family": [
       {
@@ -491,6 +491,26 @@
       {
         "intent": "翻一遍我存进 vault bank 的所有记忆，综合出 SDANet 和 pnp-corrector 两篇论文各自的要点",
         "expected": "memory_query"
+      },
+      {
+        "intent": "删除 document cc1aefd7-d388-438d-a808-118dc1f7b0d1",
+        "expected": "operation_view"
+      },
+      {
+        "intent": "把 document 0b37a4bf-a50f-4a98-b91a-b61edc1bbb4b 从库里删掉",
+        "expected": "operation_view"
+      },
+      {
+        "intent": "删掉那篇误写进库的文档",
+        "expected": "operation_view"
+      },
+      {
+        "intent": "reflect：图 1 的像素颜色和残差端点分别是什么",
+        "expected": "memory_query"
+      },
+      {
+        "intent": "询问一下 SDANet 图 3 中频域分支的具体结构",
+        "expected": "memory_query"
       }
     ],
     "retrieval_depth": [
@@ -903,6 +923,18 @@
       {
         "intent": "重试队列里积压了多少",
         "expected": "list"
+      },
+      {
+        "intent": "删除 document 0b37a4bf-a50f-4a98-b91a-b61edc1bbb4b",
+        "expected": "delete_document"
+      },
+      {
+        "intent": "把这篇误入库的文档删掉",
+        "expected": "delete_document"
+      },
+      {
+        "intent": "删除文档 cc1aefd7-d388-438d-a808-118dc1f7b0d1",
+        "expected": "delete_document"
       }
     ],
     "target_bank": [
@@ -1629,6 +1661,26 @@
         {
           "intent": "重试队列里积压了多少",
           "expectedAction": "operation.list"
+        }
+      ]
+    },
+    {
+      "title": "document → document.delete：删除已入库的源文档",
+      "samples": [
+        {
+          "intent": "删除 document 0b37a4bf-a50f-4a98-b91a-b61edc1bbb4b",
+          "expectedAction": "document.delete"
+        },
+        {
+          "intent": "把误写进库的那篇文档删掉",
+          "target": "hindsight://vault/documents/0b37a4bf-a50f-4a98-b91a-b61edc1bbb4b",
+          "expectedAction": "document.delete"
+        },
+        {
+          "intent": "删除文档 0b37a4bf-a50f-4a98-b91a-b61edc1bbb4b",
+          "env": "$ENV:readonly",
+          "expectedAction": "document.delete",
+          "expectedHint": "readonly_subagent_guard"
         }
       ]
     },

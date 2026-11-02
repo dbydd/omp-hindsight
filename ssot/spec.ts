@@ -1,5 +1,5 @@
 /**
- * hindsight-omp 的唯一事实源（Single Source of Truth）。
+ * omp-hindsight 的唯一事实源（Single Source of Truth）。
  *
  * 规则：本文件里每个常量的**取值**都在全仓唯一。代码、配置校验、judge 题目、
  * 文档表格、测试断言一律从这里派生，不得各自复述一份。要改行为，先改这里，
@@ -56,6 +56,7 @@ export const OPERATION_IDS = [
   "read",
   "retain",
   "document",
+  "document.delete",
   "entities",
   "knowledge_base",
   "mental_model",
@@ -113,6 +114,12 @@ const OPERATIONS_LITERAL = {
     returns: ["hindsight://{bank}/documents/{id}"],
     judgeKey: "op.document",
     command: ["document"],
+  },
+  "document.delete": {
+    write: true,
+    target: "bank",
+    returns: ["hindsight://{bank}/documents"],
+    judgeKey: "op.document.delete",
   },
   entities: {
     write: false,
@@ -172,6 +179,11 @@ export type PathBacking = (typeof PATH_BACKINGS)[number];
 export interface PathRoute {
   /** 相对 `hindsight://` 的模式；`:name` 是参数段，整段 URL-encode。 */
   readonly pattern: string;
+  /**
+   * 允许吃掉多段的参数名。默认每个参数段只占一段；文档 id 是唯一允许带目录的
+   * 例外（`2026-03/remd.md`），不声明它的路由也就能把多段路径判成不存在。
+   */
+  readonly greedy?: readonly string[];
   readonly backing: PathBacking;
   /** 库内数据不可变；运维视图可变。 */
   readonly immutable: boolean;
@@ -183,10 +195,11 @@ export interface PathRoute {
 
 const PATH_ROUTES_LITERAL = [
   { pattern: "",                          backing: "dir",  immutable: false, endpoint: "/banks",                        scope: "all" },
+  { pattern: ":bank",                     backing: "dir",  immutable: false, endpoint: null,                           scope: "all" },
   { pattern: ":bank/documents",           backing: "dir",  immutable: false, endpoint: "/banks/:bank/documents",         scope: "all" },
-  { pattern: ":bank/documents/:doc",      backing: "leaf", immutable: true,  endpoint: "/banks/:bank/documents/:doc",    scope: "all" },
-  { pattern: ":bank/documents/:doc/chunks", backing: "dir", immutable: true, endpoint: "/banks/:bank/documents/:doc/chunks", scope: "all" },
-  { pattern: ":bank/documents/:doc/chunks/:n", backing: "leaf", immutable: true, endpoint: "/banks/:bank/documents/:doc/chunks", scope: "all" },
+  { pattern: ":bank/documents/:doc",      backing: "leaf", immutable: true,  endpoint: "/banks/:bank/documents/:doc",    scope: "all", greedy: ["doc"] },
+  { pattern: ":bank/documents/:doc/chunks", backing: "dir", immutable: true, endpoint: "/banks/:bank/documents/:doc/chunks", scope: "all", greedy: ["doc"] },
+  { pattern: ":bank/documents/:doc/chunks/:n", backing: "leaf", immutable: true, endpoint: "/banks/:bank/documents/:doc/chunks", scope: "all", greedy: ["doc"] },
   { pattern: ":bank/chunks/:id",          backing: "leaf", immutable: true,  endpoint: "/chunks/:id",                    scope: "all" },
   { pattern: ":bank/facts",               backing: "dir",  immutable: false, endpoint: "/banks/:bank/memories/list",     scope: "all" },
   { pattern: ":bank/facts/:id",           backing: "leaf", immutable: true,  endpoint: "/banks/:bank/memories/:id",      scope: "all" },
@@ -214,6 +227,13 @@ const PATH_ROUTES_LITERAL = [
 ] as const satisfies readonly PathRoute[];
 
 export const PATH_ROUTES: readonly PathRoute[] = PATH_ROUTES_LITERAL;
+
+/**
+ * `hindsight://banks/<bank>/...` 与 `hindsight://vaults/<bank>/...` 解析时等价于
+ * `hindsight://<bank>/...`；只写前缀（可带结尾斜杠与查询串）时等价于根。
+ * 单数 `vault` 不在别名表里：它可能是配置里的真实 bank 短名，必须按原样解析。
+ */
+export const PATH_PREFIX_ALIASES = ["banks", "vaults"] as const;
 
 // ─────────────────────────────────────────────────────────────
 // 3. 配置键
@@ -357,7 +377,7 @@ const JUDGE_QUESTIONS_LITERAL = [
   // 运行与运维族细化：异步任务与队列状态管理
   {
     id: "operation_action",
-    optionsFrom: ["list", "get", "cancel"],
+    optionsFrom: ["list", "get", "cancel", "delete_document"],
     when: { question: "action_family", in: ["operation_view"] },
   },
 

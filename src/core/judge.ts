@@ -30,6 +30,7 @@ export const RESOLVED_ACTIONS = [
   "recall",
   "reflect",
   "retain",
+  "document.delete",
   "knowledge_base.tree",
   "knowledge_base.search",
   "knowledge_base.get",
@@ -55,6 +56,7 @@ const ACTION_WRITES: Readonly<Record<ResolvedActionId, boolean>> = {
   recall: false,
   reflect: false,
   retain: true,
+  "document.delete": true,
   "knowledge_base.tree": false,
   "knowledge_base.search": false,
   "knowledge_base.get": false,
@@ -96,7 +98,7 @@ type KnowledgeBaseOption =
 
 type MentalModelOption = "list" | "get" | "create" | "refresh" | "delete";
 
-type OperationOption = "list" | "get" | "cancel";
+type OperationOption = "list" | "get" | "cancel" | "delete_document";
 
 const KNOWLEDGE_BASE_ACTIONS: Readonly<Record<KnowledgeBaseOption, ResolvedActionId>> = {
   tree: "knowledge_base.tree",
@@ -120,6 +122,7 @@ const OPERATION_ACTIONS: Readonly<Record<OperationOption, ResolvedActionId>> = {
   list: "operation.list",
   get: "operation.get",
   cancel: "operation.cancel",
+  delete_document: "document.delete",
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -190,6 +193,14 @@ interface QuestionCopy {
 }
 
 /**
+ * 用户口语与配置里的叫法共用一段语义：bank、vault、记忆库、库 指同一个记忆容器，
+ * 而 `vault` 本身也可能就是配置里的 bank 短名。分类（action_family）与选库
+ * （target_bank）都必须带着这段约定读题，否则会把 vault 当成另一种资源。
+ */
+const MEMORY_CONTAINER_CONTEXT =
+  "共同术语（先读）：bank、vault、记忆库、库 是同一个对象的四种叫法——记忆容器，即下面 available_banks 或选项里列出的那些库；vault 也可能正是配置里的一个 bank 短名，提到它时按短名对应到可用库，不要理解成另一类资源。在某个 vault 里读取或归纳已存事实属于 memory_query（recall / reflect），把新事实、结论或整份文件存进去属于 memory_retain；knowledge_base 只用于明确对知识页（page）或目录（folder）本身做维护。";
+
+/**
  * 判据文案是判定质量的源头，生产路径与测试必须用同一份：导出供 e2e 测试直接注入
  * （经 judgeOverrides），不再在测试里维护第二份拷贝——两份漂移正是 R10 曾在 E2E
  * 失败而手动复跑通过的原因。
@@ -204,13 +215,13 @@ export const QUESTION_COPY: Readonly<Record<JudgeQuestionId, QuestionCopy>> = {
   },
   action_family: {
     instructions:
-      "你在为 omp 的 Hindsight 记忆插件做意图分类。逐条阅读下面的解释，理解每个选项为什么存在、它们之间的边界在哪里，然后归类。\n背景：memory_query 和 memory_retain 操作的是散装的记忆事实（facts）；knowledge_base 和 mental_model 操作的是结构化资产（页面/目录/模型）。\n入库边界：把一份新的文件、论文、文章、文档、报告整份存进记忆库，是 memory_retain，不管用户把库叫「知识库」「vault」还是别的名字。paper / document / article / 论文 / 文章 / 文档 / 报告是内容名词，指「要存的那份新材料本身」，不是 knowledge_base 里的「页面(page)」。但这条边界只覆盖「把新材料存进来」这一个动作：如果句子是在对已经存好的记忆做翻查、检索、罗列或归纳（翻一遍我存的…/找出所有…的事实/列出…/综合出…的要点/总结一下…的思路），那是在读取已有内容，属于 memory_query，哪怕句中出现 vault、论文、综述这些词——材料是论文不等于这次动作是入库。\n知识库维护的边界：只有本句确实在对结构化页面或目录执行维护时才选 knowledge_base——建页、读页、改页、删页、构建/刷新某页、翻目录树，且动作的宾语就是「知识页 / 页面 / page / 文件夹 / 目录」。两个反例要排除：只说「存到知识库」再附一份文件或一段正文，是 memory_retain；句子正文只是在谈论页面（例如记录一条「页创建与模型创建共用参数」的事实），并没有真的在建页改页，也是 memory_retain。\n心智模型的边界：本句的动作宾语就是某个心智模型本身时选 mental_model——读它的正文、创建、刷新、删除、列出，或句首「心智模型「X」：…」这类命名声明。判据落在宾语上而不是词出现在哪：宾语里没有「心智模型 / mental model」这个实体时，句中冒出「模型」「角色」也是别的意思——「判断意图用的角色叫什么」在查配置值，「embedding 模型怎么选」在查选型结论，归 memory_query。\noperation_view 的例外：问的对象是一个正在运行或刚结束的作业实例（作业清单、有哪些失败的、积压多少、某作业进度、取消某个作业）时，即使句子是「有哪些…」这种疑问形式，也选 operation_view。但如果是在讨论 operation 这个对象的实现或字段语义（「getOperation 为什么返回 null」「progress 怎么聚合」「child_operations 是什么」），那是查代码事实，回到 memory_query 或 none——句中带「任务」「进度」并不够。\n关键区分：问句、求助句和对比句（为什么/怎么/能不能/应该怎么说/对比/评估/总结/解释一下/比较）通常是 memory_query 或 none；但上面 operation_view 的作业实例问句例外。只有当句子真的在陈述或保存一条新内容时才选 memory_retain。",
+      "你在为 omp 的 Hindsight 记忆插件做意图分类。逐条阅读下面的解释，理解每个选项为什么存在、它们之间的边界在哪里，然后归类。\n背景：memory_query 和 memory_retain 操作的是散装的记忆事实（facts）；knowledge_base 和 mental_model 操作的是结构化资产（页面/目录/模型）；operation_view 操作的是作业实例与文档生命周期维护。\n【绝对只读安全铁律】：凡是包含明确提问、反思、探究动词（reflect、询问、问一下、请问、查一下、为什么、怎么、能不能、如何、请分析、对比、比较、评估），或句式属于只读视觉/技术问句（例如针对图像特征、像素、颜色、残差端点、图表细节提问，或者对比两个算法/技术/embedding方案的取舍）的句子，绝对是 memory_query，严禁判定为 memory_retain 或 mental_model！绝不能因为句子很长、包含专业技术术语、论文实体或视觉细节就把它误判为沉淀结论或模型管理。\n入库边界：只有当句子真正在把一份新文件、论文、文章、文档、报告整份存进记忆库，或显式陈述要保存某条结论时才是 memory_retain。如果句子是在对已经存好的记忆做翻查、检索、罗列、思考或归纳，哪怕句中出现 vault、论文、综述这些词，都属于 memory_query。\n文档删除的边界：删除入库文档（「删除 document <id>」「删除文档 <id>」「删掉这篇文档」）的操作属于 operation_view，由底层文档删除通道承接，绝不是 knowledge_base 的页面删除（后者只针对知识页 page）；知识页页面维护必须明确指向知识页或 page。\n知识库维护的边界：只有本句确实在对结构化页面或目录执行维护时才选 knowledge_base——建页、读页、改页、删页、构建/刷新某页、翻目录树，且动作的宾语就是「知识页 / 页面 / page / 文件夹 / 目录」。\n心智模型的边界：本句的动作宾语必须是具体的心智模型资产（mental_model）本身——读正文、创建、刷新、删除、列出，或句首明确声明模型名称。如果只是查询某个角色、配置参数、算法模型类型，或者对比两个技术方案/选型取舍（如「对比一下两个 embedding 方案的取舍」「查查判断意图所用的角色叫什么」），属于查询事实或多方案评估，绝对归 memory_query。\noperation_view 的范围：① 查看正在运行或刚结束的作业实例（作业清单、进度、状态、取消作业）；② 对已入库原始文档的删除与维护（删除某篇 document/文档）。",
     criteria: {
-      knowledge_base: "操作知识库结构化资产：知识页（page）、目录树/文件夹（folder）。选它的信号是本句正在对某个具体页面或目录执行维护——建页、改页、删页、构建/刷新某页、翻目录树、按关键词搜页面，且动作宾语就是页面或目录本身。容易混淆点：① 把一份文件、论文、文档整份存起来不是知识页操作（那是 memory_retain），哪怕用户口语里管库叫「知识库」，「帮我存一下这篇论文到知识库」是入库不是建页；② 只是在正文里谈论页面（「记录一下：页创建与模型创建共用一套参数」）是在存一条事实（memory_retain），不是在维护页面。",
+      knowledge_base: "操作知识库结构化资产：知识页（page）、目录树/文件夹（folder）。选它的信号是本句正在对某个具体页面或目录执行维护——建页、改页、删页、构建/刷新某页、翻目录树、按关键词搜页面，且动作宾语就是页面或目录本身。容易混淆点：① 把一份文件、论文、文档整份存起来不是知识页操作（那是 memory_retain）；② 删掉已入库的文档（document）不是删知识页（那是 operation_view 的 document 删除）；③ 只是在正文里谈论页面是在存事实（memory_retain）。",
       mental_model: "操作心智模型：长期回答某个问题的认知资产，由系统自动归纳维护。选它的信号是本句的动作宾语就是某个心智模型本身——「读一下工程准则心智模型的正文」「刷新那个心智模型」「列出所有心智模型」，或者句首「心智模型「X」：记录/沉淀…」这种命名声明（在登记新模型，后半句只是它要回答的问题）。判据落在宾语上，不落在词出现在哪个位置：宾语里没有「心智模型 / mental model」这个实体时，即使句中冒出「模型」「角色」这类词，讲的也是别的东西。「判断意图用的角色叫什么」是在查配置值，「embedding 模型怎么选」是在查选型结论，「对比两个方案」是在做比较——都归 memory_query。",
-      operation_view: "查看或取消本系统正在跑的异步作业：用户要看作业清单、某个作业当前的进度与状态、积压情况，或者要中止一个作业时才选这里。判据是句子里有没有指向一个具体的作业实例（「那个入库任务跑完了吗」「取消刚才那个」「队列里积压了多少」「哪些任务失败了」）。反例很重要：讨论 operation 这个对象的实现或字段行为——「getOperation 为什么返回 null」「child_operations 怎么聚合」「progress 字段是什么语义」——是在问代码事实，属于 memory_query 或 none；句中带「任务」「进度」并不够，必须指向作业实例才选这里。",
-      memory_retain: "把新内容沉淀进记忆库：整份新文件、论文、文章、文档、报告入库（存到库/存到 vault/入库/保存这份/记住这篇文章/retain this paper|document），或者陈述、保存一条结论、心得、规范、经验。信号词：记住、记一下、保存、沉淀、写进记忆、别弄丢了、入库、存到库里、帮我存一下。注意：问句（为什么/怎么/应该怎么说）不是在陈述结论；「翻一遍/找出/列出我已经存的…再综合/总结」是读取已有记忆，属于 memory_query，即使句中带 vault、论文等词。",
-      memory_query: "从记忆库检索或归纳已存的事实：召回（recall）、回忆、翻一遍、找出/列出所有…、问「之前有没有…」「当时…是什么」「…用的角色叫什么」，以及对已存内容做综合归纳（「综合出两篇论文各自的要点」「总结一下这套方案的思路」）。也包括所有需要系统作答的开放问题：为什么（因果）、对比/比较（差异）、评估/权衡（利弊）、总结/综述（归纳）、解释一下（原理）；以及咨询做法（「我想把论文存进知识库，应该怎么说？」）——用户在问方法，没有要你立刻执行。判断要点：动作是在读取/归纳库里已有的东西，而不是把新材料存进来。容易混淆点：查询代码目录名/路径、算法模型选型（embedding 模型）虽然像知识库话题，但本质是查事实。",
+      operation_view: "查看或管理后台异步任务，或维护/删除已入库的文档实例：① 查看作业清单、任务状态进度或取消中止任务（「任务跑完了吗」「取消作业 op-123」「队列积压多少」）；② 对已入库的文档对象执行删除（「删除 document <id>」「删除这篇文档」「把那个文档删掉」）。",
+      memory_retain: "把新内容沉淀进记忆库：整份新文件、论文、文章、文档、报告入库（存到库/存到 vault/入库/保存这份/记住这篇文章/retain this paper|document），或者陈述、记录一条工程/设计事实或心得结论（如「记录一下：页创建与模型创建共用...」只是陈述一条事实，不是管理结构化资产；但句首已声明资产实体的如「心智模型「X」：记录...」属于 mental_model）。注意：包含 reflect、询问、问一下、为什么、怎么等任何疑问或探究语气的长问句，绝对不是 memory_retain，绝不能把问题本身入库！",
+      memory_query: "从记忆库检索、反思或归纳已存的事实：召回（recall）、反思归纳（reflect）、询问图像特征与细节、翻一遍、找出/列出所有…、问「为什么」「怎么」「有没有」「是什么」等所有开放式只读问句。牢记：包含 reflect 或提问动词的探索型长句绝对属于这里，绝不能进入 memory_retain。",
       none: "这句话跟记忆库无关：寒暄、问天气、让模型改代码/重构函数。判断依据：这句话的受益者是用户当下的对话，而不是未来的记忆检索。",
     },
   },
@@ -252,11 +263,15 @@ export const QUESTION_COPY: Readonly<Record<JudgeQuestionId, QuestionCopy>> = {
     },
   },
   operation_action: {
-    instructions: "已确认用户在查看或管理后台异步任务。现在判断具体动作：list 看清单、get 查单个、cancel 中止。",
+    instructions:
+      "已确认用户在查看或管理后台异步任务，或者维护/删除已入库的文档。现在判断具体动作：\n" +
+      "- 异步任务：list 看清单、get 查单个、cancel 中止。\n" +
+      "- 文档维护：如果指令是删除入库文档（例如「删除 document <id>」「删除文档 <id>」「删掉这篇文档」），归为 delete_document；读取文档不走这里，走 memory_query 或资源树。",
     criteria: {
       list: "用户想看操作列表或积压概况，不针对某一个任务。特征是「列出/有哪些/积压了多少/哪些失败了」。",
       get: "用户想查某个具体任务的状态、进度或失败原因。特征是带 op-xxx 编号或单指某个任务。",
       cancel: "用户要中止一个任务。特征是「取消/撤销/终止」。",
+      delete_document: "用户要删除已入库的文档（document）。特征是「删除 document <id>」「删除这篇文档」「删除文档 <id>」「把文档删掉」。",
     },
   },
   target_bank: {
@@ -312,7 +327,11 @@ export function buildQuestion(
     criteria[option] = copy.criteria[option] ?? null;
   }
 
-  const instructions = overrides?.instructions ?? copy.instructions;
+  const baseInstructions = overrides?.instructions ?? copy.instructions;
+  const instructions =
+    questionId === "action_family" || questionId === "target_bank"
+      ? `${baseInstructions}\n${MEMORY_CONTAINER_CONTEXT}`
+      : baseInstructions;
   return { type: "choice", instructions, criteria };
 }
 

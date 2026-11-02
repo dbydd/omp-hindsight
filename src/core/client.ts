@@ -286,6 +286,8 @@ export interface OperationListEntry {
   readonly status: string;
   readonly items_count: number;
   readonly document_id: string | null;
+  /** 模型刷新任务指向的心智模型；其他任务为 null。构建中状态靠它反查。 */
+  readonly mental_model_id: string | null;
   readonly created_at: string;
   readonly error_message: string | null;
 }
@@ -688,6 +690,7 @@ export class HindsightHttpClient {
           status: entry.status,
           items_count: entry.items_count,
           document_id: entry.document_id ?? null,
+          mental_model_id: entry.mental_model_id ?? null,
           created_at: entry.created_at,
           error_message: entry.error_message ?? null,
         })),

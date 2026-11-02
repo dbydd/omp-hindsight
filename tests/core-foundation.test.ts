@@ -547,7 +547,11 @@ describe("paths: 路由匹配", () => {
   });
 
   test("不存在的层级不匹配，也不抛错", () => {
-    expect(matchPath("hindsight://vault")).toBeNull();
+    // 裸 bank 门牌是库自己的根：`target: hindsight://vault` 靠它解析出 bank。
+    const bankRoot = matchPath("hindsight://vault");
+    expect(bankRoot?.route.pattern).toBe(":bank");
+    expect(bankRoot?.bank).toBe("vault");
+
     expect(matchPath("hindsight://vault/unknown")).toBeNull();
     expect(matchPath("hindsight://vault/documents")).not.toBeNull();
     expect(matchPath("")).not.toBeNull();

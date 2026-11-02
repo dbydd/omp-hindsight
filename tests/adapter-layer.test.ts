@@ -43,7 +43,7 @@ describe("plugin/runtime: 配置管理与单例", () => {
   test("未配置时 loadConfig 返回 missing", async () => {
     const outcome = await loadConfig(tempDir, "main", {
       global: join(tempDir, "global-none.json"),
-      project: join(tempDir, ".omp", "hindsight-omp.json"),
+      project: join(tempDir, ".omp", "omp-hindsight.json"),
     });
     expect(outcome.status).toBe("missing");
   });
@@ -81,7 +81,7 @@ describe("plugin/runtime: 配置管理与单例", () => {
 
     const outcome = await loadConfig(tempDir, "main", {
       global: globalPath,
-      project: join(tempDir, ".omp", "hindsight-omp.json"),
+      project: join(tempDir, ".omp", "omp-hindsight.json"),
     });
     expect(outcome.status).toBe("ok");
     if (outcome.status === "ok") {
@@ -121,7 +121,7 @@ describe("plugin/runtime: 配置管理与单例", () => {
 
     const outcome = await loadConfig(tempDir, "main", {
       global: globalPath,
-      project: join(tempDir, ".omp", "hindsight-omp.json"),
+      project: join(tempDir, ".omp", "omp-hindsight.json"),
     });
     expect(outcome.status).toBe("ok");
     if (outcome.status === "ok") {

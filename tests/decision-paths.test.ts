@@ -75,7 +75,7 @@ const READ_ONLY_CONFIG = configOf([ARCHIVE_BANK]);
 const MAIN_ENV: ExecutionEnv = { role: "main", isReadonly: false };
 const READONLY_ENV: ExecutionEnv = { role: "main", isReadonly: true };
 
-/** 实战采样的两库配置：对齐 testrole 工作区 `.omp/hindsight-omp.json` 的真实形态。 */
+/** 实战采样的两库配置：对齐 testrole 工作区 `.omp/omp-hindsight.json` 的真实形态。 */
 const TESTROLE_CONFIG = configOf([
   {
     id: "vault",

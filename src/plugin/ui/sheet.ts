@@ -404,7 +404,7 @@ export class HindsightSheet implements Component {
 
   #describeConfig(): NativeNode {
     const children: NativeChild[] = [
-      textNode([span("Saving writes the project's .omp/hindsight-omp.json and rebuilds the runtime in place.", "muted")], {
+      textNode([span("Saving writes the project's .omp/omp-hindsight.json and rebuilds the runtime in place.", "muted")], {
         wrap: "word",
       }),
     ];

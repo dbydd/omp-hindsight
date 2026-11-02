@@ -85,11 +85,16 @@ export interface OperationRefParams {
   readonly operationId: string;
 }
 
+export interface DocumentRefParams {
+  readonly documentId: string;
+}
+
 /** 动作 → 参数。键集合必须与 `ResolvedActionId` 完全一致（下面的编译期检查）。 */
 export interface ActionSlots {
   readonly recall: RecallParams;
   readonly reflect: ReflectParams;
   readonly retain: RetainParams;
+  readonly "document.delete": DocumentRefParams;
   readonly "knowledge_base.tree": null;
   readonly "knowledge_base.search": KnowledgeSearchParams;
   readonly "knowledge_base.get": KnowledgePageParams;
@@ -151,15 +156,20 @@ export type PayloadLoad =
     }
   | { readonly status: "incomplete"; readonly missing: readonly string[]; readonly reason: string };
 
-/** 载荷加载端口：默认实现按魔数解析 file/payload，测试与微调可整体替换。 */
-export type PayloadLoader = (step: DecomposedStep) => Promise<PayloadLoad>;
+/**
+ * 载荷加载端口：默认实现按魔数解析 file/payload，测试与微调可整体替换。
+ *
+ * 带上 bank 是因为图注引用要写成 `hindsight://<bank>/attachments/<id>.png`：图注
+ * 只能靠正文保住，而门牌必须落在写入的那个库里。
+ */
+export type PayloadLoader = (step: DecomposedStep, bank: BankConfig) => Promise<PayloadLoad>;
 
 /** 只有 command、既没有 file 也没有 content 时返回空载荷，由 `retainSlots` 决定是否回退到提取器。 */
 const EMPTY_PAYLOAD: PayloadLoad = { status: "ok", content: "", payloadKind: "inline" };
 
-const loadPayload: PayloadLoader = async (step) => {
+const loadPayload: PayloadLoader = async (step, bank) => {
   try {
-    const payload = await buildRetainPayloadFromStep(step);
+    const payload = await buildRetainPayloadFromStep(step, bank.id);
     if (payload === null) return EMPTY_PAYLOAD;
     return { status: "ok", content: payload.content, payloadKind: payload.payloadKind };
   } catch (error) {
@@ -241,6 +251,11 @@ export async function assembleSlots(
     case "retain":
       return await retainSlots(step, target, extractionPort, bank, payloadLoader);
 
+    case "document.delete": {
+      const document = await documentIdFor(step, target, extractionPort);
+      return document.status === "incomplete" ? document : ready({ documentId: document.id });
+    }
+
     case "knowledge_base.get":
     case "knowledge_base.page_delete": {
       const page = await entityIdFor(step, target, extractionPort, PAGE_ENTITY, bank, nameLookup);
@@ -297,7 +312,7 @@ async function retainSlots(
 ): Promise<SlotAssembly> {
   if (bank === undefined) return incomplete(["bank"], "没有可写入的记忆库配置");
 
-  const payload = await payloadLoader(step);
+  const payload = await payloadLoader(step, bank);
   if (payload.status === "incomplete") return payload;
 
   const content = await retainedContent(payload, step, extractionPort, bank);
@@ -489,6 +504,47 @@ async function resolveByName(
     };
   }
   return { status: "ok", id };
+}
+
+// ─────────────────────────────────────────────────────────────
+// 文档 id
+//   文档的门牌就是 `:bank/documents/:doc`，id 本身可以是带目录的相对路径，
+//   所以只能在指令里认「文档 / document 后面紧跟的那一段」或一个裸 UUID，不猜。
+// ─────────────────────────────────────────────────────────────
+
+const DOCUMENT_ID_AFTER_NOUN = /(?:document|doc|文档)\s*(?:id\s*)?[:=#]?\s*([0-9A-Za-z][0-9A-Za-z._/-]{3,})/i;
+const UUID_ANYWHERE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
+function documentIdFromCommand(command: string): string | null {
+  const named = DOCUMENT_ID_AFTER_NOUN.exec(command)?.[1]?.replace(/[.,;:)\]]+$/, "");
+  if (named !== undefined && named.length > 0) return named;
+  return UUID_ANYWHERE.exec(command)?.[0] ?? null;
+}
+
+async function documentIdFor(
+  step: DecomposedStep,
+  target: TargetView | null,
+  extractionPort: SlotExtractionPort | undefined,
+): Promise<IdResolution> {
+  const fromTarget = target?.params.doc;
+  if (fromTarget !== undefined && fromTarget.length > 0) return { status: "ok", id: fromTarget };
+
+  const extracted = await extract(extractionPort, step.command, {
+    document_id: "要读或要删的那份已入库文档 id（文档门牌里的一段）",
+  });
+  const fromExtraction = readString(extracted.document_id);
+  if (fromExtraction !== null) return { status: "ok", id: fromExtraction };
+
+  const fromCommand = documentIdFromCommand(step.command);
+  if (fromCommand !== null) return { status: "ok", id: fromCommand };
+
+  return {
+    status: "incomplete",
+    missing: ["document_id"],
+    reason:
+      "没有给出文档 id，也没有点名是哪一份文档；可用 target: hindsight://<bank>/documents/<文档 id> 指定，" +
+      "或先读 hindsight://<bank>/documents 找到它",
+  };
 }
 
 // ─────────────────────────────────────────────────────────────

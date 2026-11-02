@@ -17,12 +17,31 @@ import type { ChunkView, MemoryDetail, OperationStatus } from "./types.ts";
 
 const ATTACHMENT_PLACEHOLDER = /⟦hs-att:([^⟧]+)⟧/g;
 
-/** 文档正文里的附件占位符 → 图片引用。占位符原位保留语义，不重排文本。 */
+/** retain 时由插件写回正文的附件引用：alt 是原始图注，链接目标是附件门牌。 */
+const AUTHORED_ATTACHMENT_REFERENCE = /!\[[^\]]*\]\(\s*hindsight:\/\/[^/\s)]+\/attachments\/([^/\s)]+?)(?:\.[A-Za-z0-9]+)?\s*\)/g;
+
+/**
+ * 文档正文里的附件占位符 → 图片引用。占位符原位保留语义，不重排文本。
+ *
+ * 已经有图注引用的附件不再重复出图：占位符是服务端给的机器句柄，图注引用才是
+ * 作者写的那句话，两者指向同一张图时只留图注那条。
+ */
 export function renderAttachments(text: string, bank: string): string {
-  return text.replace(ATTACHMENT_PLACEHOLDER, (_match, attachmentId: string) =>
+  const authored = new Set<string>();
+  for (const match of text.matchAll(AUTHORED_ATTACHMENT_REFERENCE)) {
+    const attachmentId = match[1];
+    if (attachmentId !== undefined) authored.add(attachmentId);
+  }
+  let dropped = false;
+  const rendered = text.replace(ATTACHMENT_PLACEHOLDER, (_match, attachmentId: string) => {
+    if (authored.has(attachmentId)) {
+      dropped = true;
+      return "";
+    }
     // 图片门牌固定为 `<id>.png`，附件端点按 id 段取原始字节。
-    `![${attachmentId}](${buildPath(":bank/attachments/:id", { bank, id: `${attachmentId}.png` })})`,
-  );
+    return `![${attachmentId}](${buildPath(":bank/attachments/:id", { bank, id: `${attachmentId}.png` })})`;
+  });
+  return dropped ? rendered.replace(/\n{3,}/g, "\n\n") : rendered;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -249,28 +268,38 @@ export interface KnowledgePageRenderInput {
   readonly page: KnowledgePageResponse;
   /** 来自树节点的新鲜度标记；叶路由单独取页面时未知，按 false 渲染。 */
   readonly isStale?: boolean | null;
+  /** 支撑这篇页面的构建任务仍在 pending/processing 时给它；空正文因此不是「没有事实」。 */
+  readonly pendingOperationId?: string | null;
 }
 
 export function renderKnowledgePage(input: KnowledgePageRenderInput): string {
-  const { page } = input;
-  const frontmatter = yamlFrontmatter([
+  const { page, pendingOperationId } = input;
+  const entries: Array<readonly [string, FrontmatterValue]> = [
     ["id", page.id],
     ["name", page.name],
     ["source_query", page.description ?? null],
     ["tags", page.tags ?? []],
     ["updated_at", page.timestamp ?? null],
     ["is_stale", input.isStale ?? false],
-  ]);
-  const body = knowledgePageBody(page);
+  ];
+  if (pendingOperationId !== undefined && pendingOperationId !== null) {
+    entries.push(["build_operation", pendingOperationId]);
+  }
+  const frontmatter = yamlFrontmatter(entries);
+  const body = knowledgePageBody(page, pendingOperationId ?? null);
   return `${frontmatter}\n${body.trimEnd()}\n`;
 }
 
 /**
- * 空正文有两种成因，不能都算成"首建未完成"：已有 `timestamp` 说明构建跑过，
- * 空是因为作用域内没有可取材的事实（知识页默认触发 observation）。
+ * 空正文有三种成因，必须先排除「构建还在跑」：任务的 pending/processing 是唯一
+ * 能证明内容还会到的证据；否则 `timestamp` 有值（它回落到创建时间）说明构建跑过
+ * 而作用域内没有可取材的事实。
  */
-function knowledgePageBody(page: KnowledgePageResponse): string {
+function knowledgePageBody(page: KnowledgePageResponse, pendingOperationId: string | null): string {
   if (page.body !== null && page.body !== undefined && page.body.trim().length > 0) return page.body;
+  if (pendingOperationId !== null) {
+    return `_内容正在构建中（任务 ID: ${pendingOperationId}）；构建还没写完，此刻的空正文不代表作用域内没有匹配事实。_`;
+  }
   if (page.timestamp !== null && page.timestamp !== undefined) {
     return `_This page has been indexed (at ${page.timestamp}), but contains no content because no matching facts (such as observations) were found in scope._`;
   }
@@ -283,7 +312,10 @@ function knowledgePageBody(page: KnowledgePageResponse): string {
  * 1. 内容已生成（last_refreshed_at 有值）+ 解释 is_stale 是否代表等待下次刷新；
  * 2. 空正文：尚未刷新 / 刷新完成但无提取内容 / 刷新失败（last_refresh_failed_at 有值）/ 知识页后台模型尚未完成构建。
  */
-export function describeMentalModelState(model: MentalModelResponse): string {
+export function describeMentalModelState(
+  model: MentalModelResponse,
+  pendingOperationId: string | null = null,
+): string {
   const hasContent = model.content !== null && model.content !== undefined && model.content.trim().length > 0;
 
   if (hasContent) {
@@ -293,6 +325,10 @@ export function describeMentalModelState(model: MentalModelResponse): string {
       return `${status} — 库内有新记忆等待下次刷新整合，当前呈现已归纳版本，非刷新失败。`;
     }
     return `${status} — 模型状态新鲜。`;
+  }
+
+  if (pendingOperationId !== null) {
+    return `内容正在构建中（任务 ID: ${pendingOperationId}）；构建还没写完，此刻的空正文不代表没有可提取的内容。`;
   }
 
   if (model.last_refresh_failed_at !== null && model.last_refresh_failed_at !== undefined) {
@@ -312,12 +348,14 @@ export function describeMentalModelState(model: MentalModelResponse): string {
 
 export interface MentalModelRenderInput {
   readonly model: MentalModelResponse;
+  /** 该模型的刷新任务仍在 pending/processing 时给它。 */
+  readonly pendingOperationId?: string | null;
 }
 
 export function renderMentalModel(input: MentalModelRenderInput): string {
   const { model } = input;
-  const stateDescription = describeMentalModelState(model);
-  const frontmatter = yamlFrontmatter([
+  const stateDescription = describeMentalModelState(model, input.pendingOperationId ?? null);
+  const entries: Array<readonly [string, FrontmatterValue]> = [
     ["id", model.id],
     ["name", model.name],
     ["source_query", model.source_query ?? null],
@@ -325,7 +363,11 @@ export function renderMentalModel(input: MentalModelRenderInput): string {
     ["updated_at", model.last_refreshed_at ?? null],
     ["is_stale", model.is_stale ?? false],
     ["status_description", stateDescription],
-  ]);
+  ];
+  if (input.pendingOperationId !== undefined && input.pendingOperationId !== null) {
+    entries.push(["build_operation", input.pendingOperationId]);
+  }
+  const frontmatter = yamlFrontmatter(entries);
   const body =
     model.content !== null && model.content !== undefined && model.content.trim().length > 0
       ? model.content

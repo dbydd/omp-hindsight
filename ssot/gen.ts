@@ -19,6 +19,7 @@ import {
   JUDGE_QUESTIONS,
   MODULES,
   OPERATIONS,
+  PATH_PREFIX_ALIASES,
   PATH_ROUTES,
   QUEUE_STATES,
   QUEUE_TRANSITIONS,
@@ -75,10 +76,16 @@ function renderPaths(): string {
     r.endpoint ? `\`${r.endpoint}\`` : "本地状态",
     r.scope === "main" ? "主会话" : "全部",
   ]);
-  return `${header("资源树路由", "`PATH_ROUTES`")}\n\n${table(
+  const aliasRows = PATH_PREFIX_ALIASES.map((prefix) => [
+    `\`hindsight://${prefix}\``,
+    `\`hindsight://${prefix}/<bank>/...\` → \`hindsight://<bank>/...\``,
+  ]);
+  const aliasNote =
+    "别名前缀只吞第一段：后跟 bank 短名时整段等价于 `hindsight://<bank>/...`；只写前缀（可带结尾斜杠与查询串）时等价于根。单数 `vault` 不是别名，它可能是配置里的真实 bank 短名，按原样解析。";
+  return `${header("资源树路由", "`PATH_ROUTES`、`PATH_PREFIX_ALIASES`")}\n\n${table(
     ["模式", "形态", "可变性", "支撑端点", "可见范围"],
     rows,
-  )}\n`;
+  )}\n\n## 前缀别名\n\n${aliasNote}\n\n${table(["别名前缀", "带 bank 的写法"], aliasRows)}\n`;
 }
 
 function renderConfig(): string {

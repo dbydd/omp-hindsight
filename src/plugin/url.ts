@@ -18,7 +18,8 @@ import {
 import type { MentalModelResponse } from "@vectorize-io/hindsight-client";
 import { HindsightRequestError } from "../core/client.ts";
 import { maskSecret, readApiKey } from "../core/config.ts";
-import { buildPath, matchPath, type MatchedPath } from "../core/paths.ts";
+import { backingMentalModelId } from "../core/ops.ts";
+import { buildPath, canonicalAliasPath, matchPath, type MatchedPath } from "../core/paths.ts";
 import {
   describeMentalModelState,
   renderChunk,
@@ -90,15 +91,16 @@ async function resolveHindsightUrl(url: InternalUrl, context?: ResolveContext): 
     return resource(url, describeDiscovery(await loadConfig(cwd, null), cwd));
   }
 
+  const virtualPath = canonicalAliasPath(virtualPathOf(url));
   // 适配层本地引导路由：`/attachments` 没有服务端列表端点，SSOT 也没有这条模式。
-  const guidance = matchGuidanceRoute(virtualPathOf(url));
+  const guidance = matchGuidanceRoute(virtualPath);
   if (guidance !== null) {
     const request = guidanceRequestFor(url, guidance.bank, runtime, context);
     if (bankOf(request) === undefined) return unknownBank(request);
     return guidance.view(request);
   }
 
-  const matched = matchPath(virtualPathOf(url).replace(LEGACY_KNOWLEDGE_BASE, "$1/knowledge-base"));
+  const matched = matchPath(virtualPath.replace(LEGACY_KNOWLEDGE_BASE, "$1/knowledge-base"));
   if (matched !== null) {
     if (!visibleTo(matched, context, runtime)) return resource(url, mainOnlyText(matched.path));
     const request = requestFor(url, matched, runtime, context);
@@ -126,7 +128,8 @@ async function enumerateHindsightUrl(
 ): Promise<Array<{ url: string; content: string }>> {
   const runtime = getRuntime();
   if (runtime === undefined) return [];
-  const matched = matchPath(virtualPathOf(url).replace(LEGACY_KNOWLEDGE_BASE, "$1/knowledge-base"));
+  const virtualPath = canonicalAliasPath(virtualPathOf(url));
+  const matched = matchPath(virtualPath.replace(LEGACY_KNOWLEDGE_BASE, "$1/knowledge-base"));
   if (matched === null) return [];
   if (!visibleTo(matched, context, runtime)) return [];
 
@@ -340,11 +343,57 @@ function isResource(value: unknown): value is InternalResource {
 }
 
 // ─────────────────────────────────────────────────────────────
+// 构建中状态
+//   知识页与心智模型的正文由异步刷新任务写出来：任务还在排队或执行时，读到空正文
+//   只说明构建没写完。唯一能证明这一点的证据是该模型名下的 pending/processing 任务。
+// ─────────────────────────────────────────────────────────────
+
+const BUILD_OPERATION_STATUSES = ["processing", "pending"] as const;
+
+/** 该 bank 在跑的模型刷新任务：心智模型 id → 任务 id。读不到任务列表时按没有在跑处理。 */
+async function pendingBuildOperations(request: ViewRequest, bank: BankConfig): Promise<Map<string, string>> {
+  const pending = new Map<string, string>();
+  for (const status of BUILD_OPERATION_STATUSES) {
+    try {
+      const list = await request.runtime.client.listOperations(bank.bankId, {
+        status,
+        type: "refresh_mental_model",
+        limit: 100,
+      });
+      for (const entry of list.operations) {
+        const modelId = entry.mental_model_id;
+        if (modelId !== null && !pending.has(modelId)) pending.set(modelId, entry.id);
+      }
+    } catch {
+      // 读不到任务列表只说明「无法证明还在构建」：照常渲染，别把读页面变成失败。
+    }
+  }
+  return pending;
+}
+
+/** 知识页的正文由它的支撑模型写出来；模型 id 只在知识库树上，取不到就当作没有在跑的构建。 */
+async function pendingBuildForPage(
+  request: ViewRequest,
+  bank: BankConfig,
+  pageId: string,
+): Promise<string | null> {
+  let mentalModelId: string | null;
+  try {
+    mentalModelId = await backingMentalModelId(request.runtime.client, bank.bankId, pageId);
+  } catch {
+    return null;
+  }
+  if (mentalModelId === null) return null;
+  return (await pendingBuildOperations(request, bank)).get(mentalModelId) ?? null;
+}
+
+// ─────────────────────────────────────────────────────────────
 // 各路由的视图
 // ─────────────────────────────────────────────────────────────
 
 const ROUTE_VIEWS: Readonly<Record<string, View>> = {
   "": rootView,
+  ":bank": bankRootView,
   ":bank/documents": documentIndex,
   ":bank/documents/:doc": documentLeaf,
   ":bank/documents/:doc/chunks": chunkIndex,
@@ -441,6 +490,36 @@ async function rootView(request: ViewRequest): Promise<InternalResource> {
     );
   }
   lines.push("", "## 运维", "", `- 重试队列：\`${buildPath("queue", {})}\``, `- 插件配置：\`${buildPath("plugin/config", {})}\``);
+  return resource(request.url, lines.join("\n"));
+}
+
+/**
+ * bank 根：`hindsight://<bank>` 是每个库自己的入口。
+ *
+ * 它同时是工具层 `target: hindsight://<bank>` 的解析落点，所以这里只读配置与
+ * 局部状态，不发远端请求——裸门牌不该因为服务端不可达而读不出来。
+ */
+async function bankRootView(request: ViewRequest): Promise<InternalResource> {
+  const bank = bankOf(request);
+  if (bank === undefined) return unknownBank(request);
+  const subResource = (pattern: string): string => buildPath(pattern, { bank: bank.id });
+  const lines = [
+    `# Bank：${bank.id}`,
+    "",
+    `- bankId：\`${bank.bankId}\``,
+    `- 访问级别：${bank.access}；retain：${bank.retain.mode}`,
+    `- 职责描述：${bank.description ?? "**未填写** —— judge 选库时只剩短名可判，请在 banks[].description 补一句"}`,
+    "",
+    "## 子资源",
+    "",
+    `- 文档：\`${subResource(":bank/documents")}\``,
+    `- 知识库：\`${subResource(":bank/knowledge-base")}\``,
+    `- 心智模型：\`${subResource(":bank/mental-models")}\``,
+    `- 事实（带查询召回）：\`${subResource(":bank/facts")}?q=<关键词>\``,
+    `- 观测：\`${subResource(":bank/observations")}\``,
+    `- 异步任务：\`${subResource(":bank/operations")}\``,
+    `- 统计：\`${subResource(":bank/stats")}\``,
+  ];
   return resource(request.url, lines.join("\n"));
 }
 
@@ -658,7 +737,10 @@ async function knowledgePageView(request: ViewRequest): Promise<InternalResource
   );
   if (isResource(fetched)) return fetched;
   const page = fetched;
-  return resource(request.url, renderKnowledgePage({ page }));
+  // 正文为空才值得再花一次读去证明「构建还在跑」；有正文就不问。
+  const body = page.body ?? "";
+  const pendingOperationId = body.trim().length > 0 ? null : await pendingBuildForPage(request, bank, page.id);
+  return resource(request.url, renderKnowledgePage({ page, pendingOperationId }));
 }
 
 async function mentalModelIndex(request: ViewRequest): Promise<InternalResource> {
@@ -666,6 +748,7 @@ async function mentalModelIndex(request: ViewRequest): Promise<InternalResource>
   if (bank === undefined) return unknownBank(request);
   const list = await request.runtime.client.listMentalModels(bank.bankId, { limit: 100 });
 
+  const pending = await pendingBuildOperations(request, bank);
   const showKnowledgePages = request.query["knowledge-pages"] === "1";
   const normalModels: typeof list.items = [];
   const pageBackingModels: typeof list.items = [];
@@ -697,24 +780,29 @@ async function mentalModelIndex(request: ViewRequest): Promise<InternalResource>
     lines.push("_没有独立心智模型：创建用 `hindsight` 工具的 mm.create。_");
   } else {
     for (const model of normalModels) {
-      renderModelEntry(lines, bank.id, model);
+      renderModelEntry(lines, bank.id, model, pending.get(model.id) ?? null);
     }
   }
 
   if (showKnowledgePages && pageBackingModels.length > 0) {
     lines.push("", "## 知识页后台模型（不作为独立心智模型使用）", "");
     for (const model of pageBackingModels) {
-      renderModelEntry(lines, bank.id, model);
+      renderModelEntry(lines, bank.id, model, pending.get(model.id) ?? null);
     }
   }
 
   return resource(request.url, lines.join("\n"));
 }
 
-function renderModelEntry(lines: string[], bankId: string, model: MentalModelResponse): void {
+function renderModelEntry(
+  lines: string[],
+  bankId: string,
+  model: MentalModelResponse,
+  pendingOperationId: string | null,
+): void {
   const path = buildPath(":bank/mental-models/:id", { bank: bankId, id: model.id });
   const stale = model.is_stale === true ? "（待刷新）" : "";
-  const state = describeMentalModelState(model);
+  const state = describeMentalModelState(model, pendingOperationId);
   lines.push(`- \`${model.id}\` ${model.name}${stale}`, `  - 门牌：\`${path}\``, `  - 状态：${state}`);
   if (model.source_query !== null && model.source_query !== undefined) {
     lines.push(`  - 取材问题：${preview(model.source_query, 160)}`);
@@ -732,7 +820,10 @@ async function mentalModelLeaf(request: ViewRequest): Promise<InternalResource> 
   );
   if (isResource(fetched)) return fetched;
   const model = fetched;
-  return resource(request.url, renderMentalModel({ model }));
+  const content = model.content ?? "";
+  const pendingOperationId =
+    content.trim().length > 0 ? null : ((await pendingBuildOperations(request, bank)).get(model.id) ?? null);
+  return resource(request.url, renderMentalModel({ model, pendingOperationId }));
 }
 
 async function operationIndex(request: ViewRequest): Promise<InternalResource> {
