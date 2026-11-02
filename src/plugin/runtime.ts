@@ -75,16 +75,45 @@ async function readLayer(path: string): Promise<Layer> {
   return { status: "ok", data: parsed };
 }
 
-/** 逐键深合并：对象递归合并，其余（含数组）整体覆盖。 */
+/**
+ * 逐键深合并：对象递归合并，`banks` 按短名逐项合并，其余数组整体覆盖。
+ *
+ * banks 单独对待，是因为「禁掉继承来的库」不该要求重写整张清单：
+ * 项目层写 `{ id: "coding", enabled: false }` 或只改某个库的一个字段，其余库照旧继承。
+ */
 function mergeLayer(base: Record<string, unknown>, override: Record<string, unknown>): Record<string, unknown> {
   const merged: Record<string, unknown> = { ...base };
   for (const [key, value] of Object.entries(override)) {
     const previous = merged[key];
+    if (key === "banks" && Array.isArray(previous) && Array.isArray(value)) {
+      merged[key] = mergeBanks(previous, value);
+      continue;
+    }
     merged[key] = isRecord(previous) && isRecord(value) ? mergeLayer(previous, value) : value;
   }
   return merged;
 }
 
+/** 同 id 深度合并，项目层新增的 id 追加在后面；认不出 id 的条目原样保留，留给 parseConfig 报错。 */
+function mergeBanks(base: readonly unknown[], override: readonly unknown[]): unknown[] {
+  const result: unknown[] = [...base];
+  const index = new Map<string, number>();
+  result.forEach((entry, at) => {
+    if (isRecord(entry) && typeof entry.id === "string") index.set(entry.id, at);
+  });
+  for (const entry of override) {
+    const id = isRecord(entry) && typeof entry.id === "string" ? entry.id : null;
+    const at = id === null ? undefined : index.get(id);
+    if (at === undefined) {
+      if (id !== null) index.set(id, result.length);
+      result.push(entry);
+      continue;
+    }
+    const existing = result[at];
+    result[at] = isRecord(existing) && isRecord(entry) ? mergeLayer(existing, entry) : entry;
+  }
+  return result;
+}
 export async function loadConfig(
   cwd: string,
   role: string | null = null,
@@ -138,7 +167,12 @@ export function describeDiscovery(discovery: ConfigDiscovery, cwd: string): stri
   }
 }
 
-export async function saveProjectConfig(cwd: string, patch: Partial<HindsightConfig>): Promise<void> {
+/**
+ * 写项目层配置。入参刻意放宽成原始配置形状而不是 `HindsightConfig`：
+ * 这里只做「读旧文件 → 合并 → 写盘」，而被禁用的 bank 条目本来就不在运行时模型里，
+ * 用运行时类型会挡住 `{ id, enabled: false }` 这种合法写法。
+ */
+export async function saveProjectConfig(cwd: string, patch: Readonly<Record<string, unknown>>): Promise<void> {
   const path = join(cwd, ".omp", "hindsight-omp.json");
   const existing = await readLayer(path);
   if (existing.status === "invalid") {
@@ -151,7 +185,7 @@ export async function saveProjectConfig(cwd: string, patch: Partial<HindsightCon
   await writeFile(path, `${JSON.stringify(next, null, 2)}\n`, "utf8");
 }
 
-function patchLayer(patch: Partial<HindsightConfig>): Record<string, unknown> {
+function patchLayer(patch: Readonly<Record<string, unknown>>): Record<string, unknown> {
   const layer: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(patch)) {
     // `pathMapping` 已废弃（INV-14）：配置校验会拒绝它，写进项目文件只会让下一次加载失败。

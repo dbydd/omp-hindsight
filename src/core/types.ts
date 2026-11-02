@@ -68,6 +68,11 @@ export interface BankRetainConfig {
 export interface BankConfig {
   /** 唯一短名：资源树第一段与 judge 选项都用它。 */
   readonly id: string;
+  /**
+   * 只在配置文件这一层有意义：`false` 表示「禁掉继承自全局的同名库」。
+   * 解析完成后这个字段不再说明任何事——被禁的库根本不会进 `config.banks`。
+   */
+  readonly enabled?: boolean;
   /** Hindsight 侧的真实 bank id，`${ROLE}` 已解析。 */
   readonly bankId: string;
   /** 业务职责描述：judge 选库时的判据就取这一句，缺省为 null（只剩短名可判）。 */

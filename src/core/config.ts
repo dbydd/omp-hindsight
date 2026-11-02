@@ -218,6 +218,10 @@ function resolveBanks(
     }
     const resolved = resolveObject(entry, BANK_NODES, label, problems);
 
+    // enabled:false 的条目在合并层用来「禁掉继承自全局的库」，这里直接不加载它：
+    // 不建、不查、不写，资源树与 judge 选项都看不到。
+    if (resolved.enabled === false) return;
+
     const id = resolved.id;
     if (typeof id === "string") {
       if (seen.has(id)) problems.push({ key: `${label}.id`, message: `bank 短名 ${id} 重复` });

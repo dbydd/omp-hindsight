@@ -49,6 +49,22 @@ describe("plugin/runtime: 配置管理与单例", () => {
   });
 
   test("保存项目配置后能够成功读取并合并", async () => {
+    const globalPath = join(tempDir, "global.json");
+    await writeFile(
+      globalPath,
+      JSON.stringify({
+        baseUrl: "http://127.0.0.1:9999",
+        banks: [
+          {
+            id: "global-bank",
+            bankId: "global-bank-id",
+            access: "read-write",
+            retain: { mode: "manual", scopes: "per_tag" },
+          },
+        ],
+      }),
+      "utf8",
+    );
     await saveProjectConfig(tempDir, {
       baseUrl: "http://127.0.0.1:8888",
       banks: [
@@ -63,11 +79,54 @@ describe("plugin/runtime: 配置管理与单例", () => {
       ],
     });
 
-    const outcome = await loadConfig(tempDir, "main");
+    const outcome = await loadConfig(tempDir, "main", {
+      global: globalPath,
+      project: join(tempDir, ".omp", "hindsight-omp.json"),
+    });
     expect(outcome.status).toBe("ok");
     if (outcome.status === "ok") {
+      // 标量逐键覆盖，banks 按短名合并：项目层新增的库追加，继承的库保留。
       expect(outcome.config.baseUrl).toBe("http://127.0.0.1:8888");
-      expect(outcome.config.banks[0]?.id).toBe("test-bank");
+      expect(outcome.config.banks.map((bank) => bank.id)).toEqual(["global-bank", "test-bank"]);
+    }
+  });
+
+  test("项目层用 enabled:false 摘掉继承自全局的 bank", async () => {
+    const globalPath = join(tempDir, "global.json");
+    await writeFile(
+      globalPath,
+      JSON.stringify({
+        baseUrl: "http://127.0.0.1:9999",
+        banks: [
+          {
+            id: "prod-bank",
+            bankId: "prod-bank-id",
+            access: "read-write",
+            retain: { mode: "manual", scopes: "per_tag" },
+          },
+          {
+            id: "keep-bank",
+            bankId: "keep-bank-id",
+            access: "read-write",
+            retain: { mode: "manual", scopes: "per_tag" },
+          },
+        ],
+      }),
+      "utf8",
+    );
+    await saveProjectConfig(tempDir, {
+      baseUrl: "http://127.0.0.1:18888",
+      banks: [{ id: "prod-bank", bankId: "prod-bank-id", enabled: false }],
+    });
+
+    const outcome = await loadConfig(tempDir, "main", {
+      global: globalPath,
+      project: join(tempDir, ".omp", "hindsight-omp.json"),
+    });
+    expect(outcome.status).toBe("ok");
+    if (outcome.status === "ok") {
+      // 被禁的库完全消失：不建、不查、不写，也不会出现在资源树里。
+      expect(outcome.config.banks.map((bank) => bank.id)).toEqual(["keep-bank"]);
     }
   });
 
