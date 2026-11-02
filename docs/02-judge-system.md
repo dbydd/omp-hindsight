@@ -201,6 +201,8 @@ System One 模型的判定准确率，完全取决于系统传给它的输入状
 
 决策流程由门禁层、第一级族系判定与第二级特化判定组成。
 
+本节每道题的题面与判据正文不在代码里：内置包是 `packs/default/judge/<question>.md`（`# Instructions` 与 `# Criteria`），项目层 `<cwd>/.omp/prompts/hindsight/judge/` 可以只覆盖其中一个文件，未覆盖的题目与选项回退内置包。代码只保留选项结构与执行映射。
+
 ### 门禁层：意图复合度判决（`intent_cardinality`）
 
 由本地 System One 模型判定输入是直接进入单步路由，还是需要先进行结构化解构：

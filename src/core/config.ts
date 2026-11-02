@@ -268,6 +268,7 @@ function resolveBanks(
         mode: valueOf(retain, "mode"),
         scopes: valueOf<ObservationScopes>(retain, "scopes"),
         constantTags: valueOf(retain, "constantTags"),
+        autoTarget: valueOf(retain, "autoTarget"),
       },
     });
   });
@@ -310,6 +311,7 @@ export function parseConfig(raw: unknown, options: ParseConfigOptions = {}): Con
     apiKeyEnvVar: valueOf(global, "apiKeyEnvVar"),
     timeoutMs: valueOf(global, "timeoutMs"),
     enabled: valueOf(global, "enabled"),
+    promptPack: valueOf(global, "promptPack"),
     banks,
     pathMapping: [],
     retainContent: valueOf(global, "retainContent") ?? null,

@@ -63,6 +63,8 @@ export interface BankRetainConfig {
   /** INV-10：必填且不得留空，不给静默默认。 */
   readonly scopes: ObservationScopes;
   readonly constantTags: readonly string[];
+  /** false 时该库不作为写操作的自动选库候选，仅在调用方显式给出 target 时允许写入。 */
+  readonly autoTarget: boolean;
 }
 
 export interface BankConfig {
@@ -97,6 +99,8 @@ export interface HindsightConfig {
   readonly timeoutMs: number;
   /** false 时插件静止，不注册工具与路由。 */
   readonly enabled: boolean;
+  /** 提示词资源包名称或本地路径；`default` 表示只用内置包。 */
+  readonly promptPack: string;
   readonly banks: readonly BankConfig[];
   readonly pathMapping: readonly PathMappingConfig[];
   readonly retainContent: JsonValue | null;

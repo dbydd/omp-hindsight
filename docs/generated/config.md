@@ -10,6 +10,7 @@
 | `apiKeyEnvVar` | global | string | 可选 | HINDSIGHT_API_KEY | — | — |
 | `timeoutMs` | global | number | 可选 | 30000 | 毫秒，HTTP 单次请求上限 | — |
 | `enabled` | global | boolean | 可选 | true | false 时插件静止，不注册工具与路由 | — |
+| `promptPack` | global | string | 可选 | default | 提示词资源包名称或本地相对/绝对路径 | — |
 | `banks` | global | json | 必填 | — | — | — |
 | `banks[].id` | bank | string | 必填 | — | 唯一短名，资源树与 judge 选项都用它 | — |
 | `banks[].enabled` | bank | boolean | 可选 | true | false 时该库完全不被加载：不建、不查、不写，资源树里也看不到 | — |
@@ -24,6 +25,7 @@
 | `banks[].retain.mode` | bank | string | 可选 | manual | manual \\| decision \\| auto \\| off | — |
 | `banks[].retain.scopes` | bank | json | 必填 | — | observationScopes，不允许留空 | — |
 | `banks[].retain.constantTags` | bank | string[] | 可选 | `harness:omp` | — | — |
+| `banks[].retain.autoTarget` | bank | boolean | 可选 | true | false 时该库不作为写操作的自动选库候选，仅在显式给出 target 时允许写入 | — |
 | `retainContent` | global | json | 可选 | — | — | — |
 | `toolFilter` | global | json | 可选 | — | — | — |
 | `strip` | global | json | 可选 | — | — | — |

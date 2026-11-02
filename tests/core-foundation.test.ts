@@ -17,6 +17,7 @@ import {
   type RetainSubmitter,
 } from "../src/core/client.ts";
 import { maskSecret, parseConfig, readApiKey, resolveBankId } from "../src/core/config.ts";
+import { decideAction } from "../src/core/judge.ts";
 import { buildPath, matchPath, resolveLocalFile } from "../src/core/paths.ts";
 import {
   RETRY_MAX_ATTEMPTS,
@@ -287,6 +288,7 @@ describe("config: 解析与默认值", () => {
     );
     expect(vault.retain.mode).toBe("decision");
     expect(vault.retain.scopes).toBe("per_tag");
+    expect(vault.retain.autoTarget).toBe(true);
     expect(vault.retain.constantTags).toEqual(
       CONFIG_KEYS["banks[].retain.constantTags"]?.default as string[],
     );
@@ -1041,5 +1043,80 @@ describe("queue: 重放与状态迁移", () => {
       corrupt: [],
     });
     expect(calls).toEqual([]);
+  });
+});
+
+describe("judge: chooseBank 的 autoTarget 保护门禁", () => {
+  const skillBankConfig = {
+    baseUrl: "http://127.0.0.1:8888",
+    banks: [
+      {
+        id: "vault",
+        bankId: "test-vault",
+        access: "read-write",
+        retain: { mode: "manual", scopes: "per_tag", autoTarget: true },
+        description: "主知识库",
+      },
+      {
+        id: "skills",
+        bankId: "test-skills",
+        access: "read-write",
+        retain: { mode: "manual", scopes: "per_tag", autoTarget: false },
+        description: "技能与规范库（受保护，禁止自动写入）",
+      },
+    ],
+  };
+  const parsed = parseConfig(skillBankConfig, { role: "main" });
+  if (!parsed.ok) throw new Error("测试配置解析失败");
+  const config = parsed.config;
+  const env = { role: "main", isReadonly: false };
+
+  test("写操作未给 target 时，自动选库候选硬排除 autoTarget=false 的库", async () => {
+    const dummyJudge = async () => ({
+      action_family: { choice: "memory_retain", confidence: 0.9, probabilities: { memory_retain: 0.9 } },
+      retain_source: { choice: "inline", confidence: 0.9, probabilities: { inline: 0.9 } },
+      target_bank: { choice: "skills", confidence: 0.9, probabilities: { skills: 0.9 } },
+    });
+    const step = { command: "记录一条技能操作规范", payload: "规范正文", file: null, target: null };
+    const outcome = await decideAction(step, config.banks, env, dummyJudge);
+    // 因为 skills 被排除，只剩唯一的可写候选 vault，直接单库解析为 vault，不落入 skills
+    expect(outcome.status).toBe("resolved");
+    if (outcome.status === "resolved") {
+      expect(outcome.bank).toBe("vault");
+    }
+  });
+
+  test("写操作显式指定 target 时，autoTarget=false 的库正常放行", async () => {
+    const dummyJudge = async () => ({
+      action_family: { choice: "memory_retain", confidence: 0.9, probabilities: { memory_retain: 0.9 } },
+      retain_source: { choice: "inline", confidence: 0.9, probabilities: { inline: 0.9 } },
+    });
+    const step = { command: "记录一条技能操作规范", payload: "规范正文", file: null, target: "skills" };
+    const outcome = await decideAction(step, config.banks, env, dummyJudge);
+    expect(outcome.status).toBe("resolved");
+    if (outcome.status === "resolved") {
+      expect(outcome.bank).toBe("skills");
+    }
+  });
+
+  test("读操作未给 target 时，autoTarget=false 的库依然作为合法候选可读", async () => {
+    let receivedCandidates: string[] = [];
+    const dummyJudge = async (_st: unknown, q: Record<string, { criteria: Record<string, unknown> }>) => {
+      if (q.target_bank) {
+        receivedCandidates = Object.keys(q.target_bank.criteria);
+      }
+      return {
+        action_family: { choice: "memory_query", confidence: 0.9, probabilities: { memory_query: 0.9 } },
+        retrieval_depth: { choice: "recall", confidence: 0.9, probabilities: { recall: 0.9 } },
+        target_bank: { choice: "skills", confidence: 0.9, probabilities: { skills: 0.9 } },
+      };
+    };
+    const step = { command: "查询一下技能规范", payload: null, file: null, target: null };
+    const outcome = await decideAction(step, config.banks, env, dummyJudge as never);
+    expect(receivedCandidates.sort()).toEqual(["skills", "vault"]);
+    expect(outcome.status).toBe("resolved");
+    if (outcome.status === "resolved") {
+      expect(outcome.bank).toBe("skills");
+    }
   });
 });

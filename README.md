@@ -1,70 +1,168 @@
-# OMP-Hindsight 插件
+# @dbydd/omp-hindsight
 
-`omp-hindsight` 是面向 `oh-my-pi`（omp）编码助手的通用长程记忆与知识库集成插件。它将自托管或云端 Hindsight 实例挂载为 Agent 的原生外脑，为多轮复杂开发与学术研究提供长效记忆、跨会话知识积累与自主工作流规约感知。
-
-本插件是一个普适性的独立工程，适用于任何需要外接 Hindsight 认知记忆与多模态知识资产的 omp 项目。其核心架构与高严谨度设计原则（如引用闭环、零噪声渲染、单工具路由等），提炼自高密度学术研究与复杂多代理工程实践。
+`omp-hindsight` 是面向 `oh-my-pi`（omp）编码助手的长程记忆与知识库集成插件。它将自托管或云端 Hindsight 实例挂载为 Agent 的原生外脑，为多轮复杂开发与研究任务提供长效记忆、跨会话知识积累与自主工作流规约感知。
 
 ---
 
-## 核心设计支柱
+## 核心能力
 
-1. **全虚拟化多模态文件系统（`hindsight://`）**：
-   将远端记忆库的文档原文（4.9 万字全文无损）、文本分块（chunks）、图片附件、事实、观察、知识页与心智模型全部虚拟化为内部只读文件系统。Agent 可以直接使用原生的 `read`、`grep`、`find` 自由查阅和查看插图，使工程工作区彻底摆脱数十 GB 本地物理二进制文件的存储负担。路径也接受 `hindsight://banks/<bank>/...` 与 `hindsight://vaults/<bank>/...` 前缀别名，二者都归一为 `hindsight://<bank>/...`；bank、vault、记忆库、库是同一种记忆容器的不同叫法。
+1. **虚拟化多模态资源树（`hindsight://`）**：
+   将远端记忆库的文档原文、文本分块（chunks）、事实（facts）、观察（observations）、知识页（knowledge pages）、心智模型（mental models）与异步任务（operations）全部映射为只读虚拟文件系统。Agent 可以直接使用原生的 `read`、`grep`、`find` 自由查阅。
+   - `hindsight://`：总览全部已配置的 bank 与队列状态。
+   - `hindsight://<bank>/facts/<id>`：单条事实详情与上下文。
+   - `hindsight://<bank>/knowledge-base/pages/<id>`：结构化知识页。
+   - `hindsight://<bank>/mental-models/<id>`：心智模型正文与演化。
+   - `hindsight://<bank>/operations/<id>`：异步作业执行状态与进度追踪。
+   - `hindsight://queue`：离线重试队列总览与故障排查。
+   - `hindsight://plugin/config`：当前生效的全局与各 bank 运行配置。
+
 2. **单工具与 System One 分层判定**：
-   摒弃平铺 20+ 个复杂工具的传统模式，收敛为一个直观强类型的 `hindsight({ intent, content?, file?, target? })` 入口。底层直接对接 omp 原生的 `modelRoles.judge`（System One 决策模型），通过同类聚类两级决策树完成受控分类，并通过两阶段原文切片物化机制实现零参数幻觉与零文本二次改写。
-3. **自适应感知、Tern 专武联动与极简离线重试**：
-   在长程自治编码循环中，自适应提取器敏锐感知报错指纹与操作目标，动态注入即时规约并进行反向踩坑熔断；重型拓扑与大盘全部通过 Tern 伴侣窗格静默分流，保持 Agent 会话窗口零上下文噪音；写入走 Hindsight 原生异步提交（HTTP 202），本地离线重试队列纯粹可靠。
+   摒弃平铺多个零散工具的传统设计，收敛为一个强类型的 `hindsight({ intent, content?, file?, target? })` 入口：
+   - `intent`：单步自然语言意图（问答、检索、存文件、建页等）。
+   - `content`：内联文本正文载荷（零代码幻觉传递）。
+   - `file`：本地物理文件路径（插件直接流式读取，不占模型上下文）。
+   - `target`：明确的虚拟路径或 bank 目标（最可靠的消歧锚点）。
+   底层直接对接 omp 原生的 `modelRoles.judge`（System One 决策模型），以「操作宾语确定资产类型，动词意图确定读写方向」的原则实现低延迟、高精度的意图路由。
+
+3. **银行写入硬隔离（`autoTarget` 门禁）**：
+   支持为特定敏感库（如规范库、技能库）设置 `banks[].retain.autoTarget: false`。未显式给出 target 的自动选库写入会被硬排除在该库之外，杜绝普通会话记录与测试流水意外污染长期稳定资产。
+
+4. **无锁本地重试队列（Offline Queue）**：
+   远端网络抖动或服务暂时不可用时，写入请求原子暂存至 `.omp/retry-queue/pending/`，并在会话启动与上下文压缩后自动按 PID 隔离重放，保障长程运行时的最终一致性。
 
 ---
 
-## 核心技术文档体系
+## 安装与配置
 
-为了提供高凝聚度、条理清晰且端到端完整的阅读体验，文档集收敛为 **3 份核心技术规范**：
+### 1. 安装插件
 
-* **[docs/01-system-architecture.md](docs/01-system-architecture.md)（系统架构与设计全景）**：
-  普适定位与核心痛点剖析、五大端到端交互实例（读虚拟知识、调单工具、自治动态感知、全虚拟图文闭环、Tern 伴侣窗格零噪声渲染）、单向依赖模块图、核心工程决策（为什么划分 `history://` vs Hindsight、为什么单工具、Hindsight 原生异步与本地离线重试、本地源码可选映射、人机 H2M 与机机 M2M 功效）。
-* **[docs/02-judge-system.md](docs/02-judge-system.md)（System One 判定、参数物化与执行规约）**：
-  直接对接 omp 原生 `resolveJudge`、System One 决策模型真实能力、同类聚类两级决策规范与锐利 Criteria 判据手册、State 投影质量规范、置信度路由，以及两阶段参数物化（模型指位置，代码做截取）。
-* **[docs/03-runtime-lifecycle.md](docs/03-runtime-lifecycle.md)（运行时生命周期、自适应 Recall 与高可靠队列）**：
-  三层注入模型、长程自治中的自适应上下文提取（报错优先、意图挖掘、焦点防抖）、本地文件系统无锁异步持久化队列，以及失败优雅降级逻辑。
-* **[docs/generated/](docs/generated/)（单一真值源 SSOT 自动派生参考）**：
-  受控操作清单（operations）、配置项定义（config）、虚拟路径表（paths）、系统不变量（invariants）与状态机（runtime）。
+在 omp 环境中安装：
+
+```bash
+omp plugin add @dbydd/omp-hindsight
+```
+
+或在项目 `.omp/config.yml` 中挂载：
+
+```yaml
+plugins:
+  - "@dbydd/omp-hindsight"
+```
+
+### 2. 配置文件
+
+插件按 `~/.omp/agent/hindsight-omp.json`（全局）与 `<cwd>/.omp/hindsight-omp.json`（工作区）分层合并。
+
+示例配置（`<cwd>/.omp/hindsight-omp.json`）：
+
+```json
+{
+  "baseUrl": "http://127.0.0.1:8888",
+  "apiKeyEnvVar": "HINDSIGHT_API_KEY",
+  "banks": [
+    {
+      "id": "vault",
+      "bankId": "project-vault",
+      "access": "read-write",
+      "description": "当前项目主知识与记忆库，存放活跃的研究与设计知识、核心事实与精读结论",
+      "retain": {
+        "mode": "manual",
+        "scopes": "per_tag",
+        "autoTarget": true
+      }
+    },
+    {
+      "id": "agent-memo",
+      "bankId": "agent-${ROLE}",
+      "access": "read-write",
+      "description": "Agent 工作记忆库：会话决策、进度、调试排错流水与工具使用心得",
+      "retain": {
+        "mode": "decision",
+        "scopes": "per_tag",
+        "autoTarget": true
+      }
+    },
+    {
+      "id": "standards",
+      "bankId": "org-standards",
+      "access": "read-write",
+      "description": "系统级规范与操作准则（受保护库，仅限显式写入）",
+      "retain": {
+        "mode": "manual",
+        "scopes": "per_tag",
+        "autoTarget": false
+      }
+    },
+    {
+      "id": "archive",
+      "bankId": "project-archive",
+      "access": "read",
+      "description": "只读归档库，存放已冻结的历史资料",
+      "retain": {
+        "mode": "off",
+        "scopes": "per_tag"
+      }
+    }
+  ]
+}
+```
 
 ---
 
-## 形式化校验
+## 提示词资源包（Prompt Pack）
 
-本插件采用严格的单一真值源（SSOT）机制。所有动作、配置与不变量均在 `ssot/spec.ts` 中以 TypeScript 类型定义。
+系统的判定题目与说明全部解耦在外部 Markdown 资源中，分四层按序合并覆盖：
 
-执行全套自洽性检查与文档一致性比对：
+| 层级 | 路径 | 作用域 |
+|---|---|---|
+| **内置兜底** | `packs/default/` | 随包分发，永不缺失 |
+| **用户全局** | `~/.omp/agent/hindsight-prompts/` | 机器全局共享 |
+| **项目工作区** | `<cwd>/.omp/prompts/hindsight/` | 仅当前工作区生效 |
+| **显式配置** | 配置项 `promptPack` 指定路径或名称 | 针对特定环境按需加载 |
+
+目录结构遵循约定：
+- `judge/action_family.md`：一审族系分类。
+- `judge/retrieval_depth.md`：检索深度（recall 查事实 vs reflect 综合反思）。
+- `judge/knowledge_base_action.md`：知识页与目录操作细化。
+- `judge/mental_model_action.md`：心智模型生命周期。
+- `judge/operation_action.md`：作业运维与物理文档删除。
+- `judge/target_bank.md`：目标记忆库消歧。
+- `judge/retain_source.md`：内容载体判定（inline / reference / session）。
+- `judge/inject_decision.md`：自动召回上下文注入决策门禁。
+- `recall/rerank.md`：候选跨库重排提示。
+- `decomposer/system.md`：长意图复合句切分系统提示。
+- `guidance/tool_description.md`：面向调用端主模型的工具描述。
+- `guidance/retain_nudge.md`：阶段性随手记提醒。
+
+---
+
+## 质量门禁与测试
+
+本插件遵循形式化单一事实源（SSOT）规范，所有配置键、动作路由与不变量均声明于 `ssot/spec.ts`。
+
+运行完整自洽性与离线测试门禁：
 
 ```bash
 bun run verify
 ```
 
-该命令会依次执行：
-1. 编译类型检查（`tsc`）
-2. 内部模型自洽性校验（`bun ssot/check.ts`）
-3. 文档派生内容逐字节比对（`bun ssot/gen.ts --check`）
+测试集分层：
+- `bun run test:core`：本地配置、虚拟路径匹配、渲染与离线队列测试。
+- `bun run test:adapter`：分层配置加载、持久化合并与运行时探测。
+- `bun run test:pack`：提示词资源包完整性与分层解析器测试。
+- `bun run test:judge`：对接 System One 端点的全量决策用例（248 条单点决策 + 130 条端到端级联测试）。
 
-## 测试纪律
+---
 
-测试按粒度拆分，逐个脚本执行，没有整体 `bun test` 入口：
+## 核心文档
 
-| 脚本 | 文件 | 依赖 |
-| :--- | :--- | :--- |
-| `bun run test:core` | `tests/core-foundation.test.ts` | 无外部资源（默认可跑） |
-| `bun run test:adapter` | `tests/adapter-layer.test.ts` | 无外部资源（默认可跑） |
-| `bun run test:container` | `tests/container-integration.test.ts` | **compose 测试实例（18888）**：建 bank、写文档、触发 LLM 抽取；需先 `docker/docker-compose.yml up -d` |
-| `bun run test:judge` | `tests/decision-unit.test.ts` + `tests/decision-paths.test.ts` | **3425 System One 端点**：全量决策测试（单元+E2E） |
-| `bun run test:judge:unit` | `tests/decision-unit.test.ts` | 单题独立发问，测试各决策点单点分类精度 |
-| `bun run test:judge:e2e` | `tests/decision-paths.test.ts` | 级联链路综合判定（含实战 R1-R12, Q1-Q7 样本） |
-| `bun run test:judge:family` | `tests/decision-unit.test.ts -t "action_family"` | **单点细切**：仅测试一审族系分类（`action_family`） |
-| `bun run test:judge:depth` | `tests/decision-unit.test.ts -t "retrieval_depth"` | **单点细切**：仅测试检索深度（recall vs reflect） |
-| `bun run test:judge:kb` | `tests/decision-unit.test.ts -t "knowledge_base_action"` | **单点细切**：仅测试知识库动作细化 |
-| `bun run test:judge:mm` | `tests/decision-unit.test.ts -t "mental_model_action"` | **单点细切**：仅测试心智模型动作细化 |
-| `bun run test:judge:ops` | `tests/decision-unit.test.ts -t "operation_action"` | **单点细切**：仅测试运维动作细化 |
-| `bun run test:judge:bank` | `tests/decision-unit.test.ts -t "target_bank"` | **单点细切**：仅测试目标记忆库消歧 |
+- [docs/01-system-architecture.md](docs/01-system-architecture.md)：系统全景设计与交互契约。
+- [docs/02-judge-system.md](docs/02-judge-system.md)：System One 分层判定机制与上下文隔离规范。
+- [docs/03-runtime-lifecycle.md](docs/03-runtime-lifecycle.md)：运行时生命周期与自适应 Recall 机制。
+- [docs/generated/](docs/generated/)：SSOT 自动生成的路由、操作、配置与不变量清单。
 
-所有决策样本均外置于数据文件 `tests/fixtures/decision-dataset.json`，无硬编码。新增样本只需向 JSON 追加条目，无需修改测试代码。
-`verify` 只包含 `test:core` 与 `test:adapter`。`test:container` 与 `test:judge` 涉及外部资源与模型调用：**agent 必须先征得用户口头同意才能运行**；用户自己在终端跑不受限。
+---
+
+## 开源许可
+
+[MIT License](LICENSE) © 2026 dbydd

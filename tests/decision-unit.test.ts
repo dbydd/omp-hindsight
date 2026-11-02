@@ -183,7 +183,7 @@ describe("decision_point: target_bank", () => {
   for (const sample of decision_points.target_bank) {
     test.concurrent(`"${sample.intent}" (${sample.action}) → ${sample.expected}`, async () => {
       const step: DecomposedStep = { command: sample.intent, payload: null, file: null, target: null };
-      const answer = await askSingleQuestion("target_bank", step, { target_action: sample.action });
+      const answer = await askSingleQuestion("target_bank", step, { action: sample.action });
       expect(answer.choice).toBe(sample.expected);
     }, 60000);
   }

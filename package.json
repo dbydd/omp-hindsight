@@ -1,14 +1,38 @@
 {
   "name": "@dbydd/omp-hindsight",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
   "type": "module",
+  "main": "./src/index.ts",
   "description": "omp 的 Hindsight 记忆插件：hindsight:// 资源树 + 单工具 judge 操作面。",
+  "license": "MIT",
+  "author": "dbydd",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dbydd/omp-hindsight.git"
+  },
+  "homepage": "https://github.com/dbydd/omp-hindsight#readme",
+  "bugs": {
+    "url": "https://github.com/dbydd/omp-hindsight/issues"
+  },
+  "keywords": [
+    "omp",
+    "oh-my-pi",
+    "hindsight",
+    "memory",
+    "ai-agent",
+    "knowledge-base"
+  ],
   "omp": {
     "extensions": [
       "./src/index.ts"
     ]
   },
+  "files": [
+    "src",
+    "packs",
+    "README.md",
+    "LICENSE"
+  ],
   "peerDependencies": {
     "@oh-my-pi/pi-agent-core": "*",
     "@oh-my-pi/pi-coding-agent": "*"
@@ -24,6 +48,7 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
     "test:core": "bun test tests/core-foundation.test.ts",
+    "test:pack": "bun test tests/prompt-pack.test.ts",
     "test:adapter": "bun test tests/adapter-layer.test.ts",
     "test:container": "bun test tests/container-integration.test.ts",
     "test:judge": "bun test tests/decision-unit.test.ts tests/decision-paths.test.ts",
@@ -38,7 +63,7 @@
     "ssot:check": "bun ssot/check.ts",
     "ssot:gen": "bun ssot/gen.ts",
     "ssot:verify": "bun ssot/check.ts && bun ssot/gen.ts --check",
-    "verify": "tsc -p tsconfig.json && bun ssot/check.ts && bun ssot/gen.ts --check && bun run test:core && bun run test:adapter"
+    "verify": "tsc -p tsconfig.json && bun ssot/check.ts && bun ssot/gen.ts --check && bun run test:core && bun run test:adapter && bun run test:pack"
   },
   "devDependencies": {
     "@oh-my-pi/pi-agent-core": "^18.14.2",

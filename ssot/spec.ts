@@ -74,7 +74,7 @@ export interface OperationSpec {
   readonly target: "bank" | "plugin" | "none";
   /** 成功后必须返回的路径模板（摘要之外的持久门牌）。 */
   readonly returns: readonly string[];
-  /** judge 判据的文本键，正文在 text/ 模块，结构在这里。 */
+  /** judge 判据的文本键，正文在提示词资源包 `packs/` 里，结构在这里。 */
   readonly judgeKey: string;
   /** 有对应 slash 子命令时列出，方便人和模型都找到同一能力。 */
   readonly command?: readonly string[];
@@ -262,6 +262,8 @@ const CONFIG_KEYS_LITERAL = {
   // 客户端行为（对齐 pi-hindsight 的成熟参数设计）
   timeoutMs:                  { scope: "global", type: "number", default: 30000, constraint: "毫秒，HTTP 单次请求上限" },
   enabled:                    { scope: "global", type: "boolean", default: true, constraint: "false 时插件静止，不注册工具与路由" },
+  // 提示词：名称到全局覆盖根找同名目录，路径按 cwd 解析；内置包始终是底座
+  promptPack:                 { scope: "global", type: "string", default: "default", constraint: "提示词资源包名称或本地相对/绝对路径" },
   // bank 列表
   banks:                      { scope: "global", type: "json", required: true },
   "banks[].id":               { scope: "bank", type: "string", required: true, constraint: "唯一短名，资源树与 judge 选项都用它" },
@@ -277,6 +279,7 @@ const CONFIG_KEYS_LITERAL = {
   "banks[].retain.mode":      { scope: "bank", type: "string", default: "manual", constraint: "manual | decision | auto | off" },
   "banks[].retain.scopes":    { scope: "bank", type: "json", required: true, constraint: "observationScopes，不允许留空" },
   "banks[].retain.constantTags": { scope: "bank", type: "string[]", default: ["harness:omp"] },
+  "banks[].retain.autoTarget": { scope: "bank", type: "boolean", default: true, constraint: "false 时该库不作为写操作的自动选库候选，仅在显式给出 target 时允许写入" },
   // 内容整形
   retainContent:              { scope: "global", type: "json" },
   toolFilter:                 { scope: "global", type: "json" },
@@ -323,7 +326,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeySpec>> = CONFIG_KEYS_
 
 // ─────────────────────────────────────────────────────────────
 // 4. judge 决策点
-//    题目结构在这里；选项来源指向 SSOT 的其他切片，正文在 text/ 模块。
+//    题目结构在这里；选项来源指向 SSOT 的其他切片，正文在提示词资源包 `packs/` 里。
 // ─────────────────────────────────────────────────────────────
 
 export interface JudgeQuestionSpec {

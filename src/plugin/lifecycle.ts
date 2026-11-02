@@ -9,6 +9,7 @@
  */
 
 import type { CustomMessagePayload, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { getBuiltinPromptPack, loadPromptPack } from "../core/prompt-pack.ts";
 import type { QueueRunReport } from "../core/queue.ts";
 import type { HindsightConfig } from "../core/types.ts";
 import {
@@ -27,7 +28,7 @@ import {
   setRuntimeLogger,
   stopRuntime,
 } from "./runtime.ts";
-import { createJudgePort } from "./tool.ts";
+import { applyPromptPack, createJudgePort } from "./tool.ts";
 import { attachStatus, type SheetHost } from "./ui/index.ts";
 
 let detachStatus: (() => void) | undefined;
@@ -52,16 +53,20 @@ export async function startRuntime(ctx: ExtensionContext): Promise<HindsightPlug
   const discovery = await loadConfig(ctx.cwd, ctx.agent.name);
   if (discovery.status !== "ok" || !discovery.config.enabled) {
     stopRuntime();
+    applyPromptPack(getBuiltinPromptPack());
     return undefined;
   }
+  const promptPack = loadPromptPack({ cwd: ctx.cwd, promptPack: discovery.config.promptPack });
   const runtime = new HindsightPluginRuntime({
     config: discovery.config,
     cwd: ctx.cwd,
     paths: discovery.paths,
     loaded: discovery.loaded,
     mainSessionId: ctx.sessionManager.getSessionId(),
+    promptPack,
   });
   setRuntime(runtime);
+  applyPromptPack(promptPack);
   // 建库模板与配置对齐同样在后台跑：启动路径不为远端往返等待。
   void runtime.alignBanks();
   // 探测只更新 runtime.status：状态条下一帧就会读到，本轮请求不为它等待。
@@ -157,8 +162,20 @@ export function registerLifecycle(pi: ExtensionAPI): void {
     const config = runtime.config;
     if (!triggerSwitches(config).turnEnd) return;
     if (!recallAllowed(ctx, config)) return;
-    // 已经空闲：这一轮是真跑完了，没有下一个步骤可以喂，注入只会白白唤醒一轮。
-    if (ctx.isIdle()) return;
+    // 终止轮必须在任何 await 之前同步拦下。
+    //
+    // 这里不能用 ctx.isIdle()：turn_end 由 agent loop 还在运行时同步抛出，此刻
+    // isStreaming 恒为 true，isIdle() 永远是 false。真正的风险在后面——放行后
+    // performAdaptiveRecall 是几秒的网络往返（查询构建 + Judge 判定 + 检索），
+    // await 期间没有工具调用的终止轮会让宿主 loop 自己跑到 agent_end 进入 idle；
+    // recall 回来再 sendMessage(deliverAs:"aside")，宿主对 idle 中收到的 aside 走
+    // #promptAgentInitiatedMessage，直接以记忆为输入自启一个新 turn，表现为
+    // 「任务结束却被记忆唤醒多干一轮」。
+    //
+    // 判据用事件自带的 toolResults：非空表示这一轮执行过工具、loop 必将带着
+    // tool result 继续，aside 会被同一个 run 在步骤边界拾取；为空就是终止轮
+    // （普通文本收尾，或 aborted/error——后两者同样没有继续的步骤可喂）。
+    if (event.toolResults.length === 0) return;
 
     try {
       if (!passRecallGate(config)) return;

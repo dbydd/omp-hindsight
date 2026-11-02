@@ -1,7 +1,7 @@
 /**
  * 判定层：把一条解构后的原子指令锁定成一个可执行动作。
  *
- * 题目结构来自 `JUDGE_QUESTIONS`（SSOT），选项判据在这里；一次回调只问一道题，
+ * 题目结构来自 `JUDGE_QUESTIONS`（SSOT），选项判据来自提示词资源包；一次回调只问一道题，
  * 上一题的答案决定下一题问不问、选项从哪来——单次判定的答案空间始终很小。
  *
  * state 只装 `CONTEXT_PROJECTIONS` 允许的字段（focus + ground_truth），
@@ -17,6 +17,7 @@ import {
 } from "../../ssot/spec.ts";
 import type { DecomposedStep } from "./decomposer.ts";
 import { matchPath } from "./paths.ts";
+import { getBuiltinPromptPack } from "./prompt-pack.ts";
 import type { BankConfig, JsonValue, JudgeDecision } from "./types.ts";
 
 // ─────────────────────────────────────────────────────────────
@@ -184,7 +185,8 @@ function ambiguousThreshold(limits?: JudgeLimits): number {
 
 // ─────────────────────────────────────────────────────────────
 // 题目判据
-//   结构在 SSOT，正文在这里；类型按 JudgeQuestionId 收口，SSOT 新增题目会直接编译失败。
+//   结构在 SSOT，正文在提示词资源包 `packs/default/judge/` 里；类型按 JudgeQuestionId
+//   收口，SSOT 新增题目而内置包没写判据会直接编译失败。
 // ─────────────────────────────────────────────────────────────
 
 interface QuestionCopy {
@@ -193,102 +195,11 @@ interface QuestionCopy {
 }
 
 /**
- * 用户口语与配置里的叫法共用一段语义：bank、vault、记忆库、库 指同一个记忆容器，
- * 而 `vault` 本身也可能就是配置里的 bank 短名。分类（action_family）与选库
- * （target_bank）都必须带着这段约定读题，否则会把 vault 当成另一种资源。
- */
-const MEMORY_CONTAINER_CONTEXT =
-  "共同术语（先读）：bank、vault、记忆库、库 是同一个对象的四种叫法——记忆容器，即下面 available_banks 或选项里列出的那些库；vault 也可能正是配置里的一个 bank 短名，提到它时按短名对应到可用库，不要理解成另一类资源。在某个 vault 里读取或归纳已存事实属于 memory_query（recall / reflect），把新事实、结论或整份文件存进去属于 memory_retain；knowledge_base 只用于明确对知识页（page）或目录（folder）本身做维护。";
-
-/**
  * 判据文案是判定质量的源头，生产路径与测试必须用同一份：导出供 e2e 测试直接注入
  * （经 judgeOverrides），不再在测试里维护第二份拷贝——两份漂移正是 R10 曾在 E2E
- * 失败而手动复跑通过的原因。
+ * 失败而手动复跑通过的原因。运行时换包同样走 `judgeOverrides`，传整份包即可。
  */
-export const QUESTION_COPY: Readonly<Record<JudgeQuestionId, QuestionCopy>> = {
-  intent_cardinality: {
-    instructions: "这是判定的第一道门。判断这条输入是一条可以直接执行的完整指令（atomic），还是把多件事挤在了一句话里、需要先拆开再逐件执行（composite）。注意：intent 与 content/file 是分离的，正文不会黏在指令里；只有指令句本身包含多个依序操作时才算 composite。",
-    criteria: {
-      atomic: "指令句只有一个操作诉求，主语和宾语都指向同一件事。即使 content 里有长正文也不算 composite——那是分离出去的载荷。",
-      composite: "指令句里塞了两个以上依序或并列的操作：「先…然后…」「A 和 B 都…」、分号并列的多条诉求。切开后每一段才是单步。",
-    },
-  },
-  action_family: {
-    instructions:
-      "你在为 omp 的 Hindsight 记忆插件做意图分类。逐条阅读下面的解释，理解每个选项为什么存在、它们之间的边界在哪里，然后归类。\n背景：memory_query 和 memory_retain 操作的是散装的记忆事实（facts）；knowledge_base 和 mental_model 操作的是结构化资产（页面/目录/模型）；operation_view 操作的是作业实例与文档生命周期维护。\n【绝对只读安全铁律】：凡是包含明确提问、反思、探究动词（reflect、询问、问一下、请问、查一下、为什么、怎么、能不能、如何、请分析、对比、比较、评估），或句式属于只读视觉/技术问句（例如针对图像特征、像素、颜色、残差端点、图表细节提问，或者对比两个算法/技术/embedding方案的取舍）的句子，绝对是 memory_query，严禁判定为 memory_retain 或 mental_model！绝不能因为句子很长、包含专业技术术语、论文实体或视觉细节就把它误判为沉淀结论或模型管理。\n入库边界：只有当句子真正在把一份新文件、论文、文章、文档、报告整份存进记忆库，或显式陈述要保存某条结论时才是 memory_retain。如果句子是在对已经存好的记忆做翻查、检索、罗列、思考或归纳，哪怕句中出现 vault、论文、综述这些词，都属于 memory_query。\n文档删除的边界：删除入库文档（「删除 document <id>」「删除文档 <id>」「删掉这篇文档」）的操作属于 operation_view，由底层文档删除通道承接，绝不是 knowledge_base 的页面删除（后者只针对知识页 page）；知识页页面维护必须明确指向知识页或 page。\n知识库维护的边界：只有本句确实在对结构化页面或目录执行维护时才选 knowledge_base——建页、读页、改页、删页、构建/刷新某页、翻目录树，且动作的宾语就是「知识页 / 页面 / page / 文件夹 / 目录」。\n心智模型的边界：本句的动作宾语必须是具体的心智模型资产（mental_model）本身——读正文、创建、刷新、删除、列出，或句首明确声明模型名称。如果只是查询某个角色、配置参数、算法模型类型，或者对比两个技术方案/选型取舍（如「对比一下两个 embedding 方案的取舍」「查查判断意图所用的角色叫什么」），属于查询事实或多方案评估，绝对归 memory_query。\noperation_view 的范围：① 查看正在运行或刚结束的作业实例（作业清单、进度、状态、取消作业）；② 对已入库原始文档的删除与维护（删除某篇 document/文档）。",
-    criteria: {
-      knowledge_base: "操作知识库结构化资产：知识页（page）、目录树/文件夹（folder）。选它的信号是本句正在对某个具体页面或目录执行维护——建页、改页、删页、构建/刷新某页、翻目录树、按关键词搜页面，且动作宾语就是页面或目录本身。容易混淆点：① 把一份文件、论文、文档整份存起来不是知识页操作（那是 memory_retain）；② 删掉已入库的文档（document）不是删知识页（那是 operation_view 的 document 删除）；③ 只是在正文里谈论页面是在存事实（memory_retain）。",
-      mental_model: "操作心智模型：长期回答某个问题的认知资产，由系统自动归纳维护。选它的信号是本句的动作宾语就是某个心智模型本身——「读一下工程准则心智模型的正文」「刷新那个心智模型」「列出所有心智模型」，或者句首「心智模型「X」：记录/沉淀…」这种命名声明（在登记新模型，后半句只是它要回答的问题）。判据落在宾语上，不落在词出现在哪个位置：宾语里没有「心智模型 / mental model」这个实体时，即使句中冒出「模型」「角色」这类词，讲的也是别的东西。「判断意图用的角色叫什么」是在查配置值，「embedding 模型怎么选」是在查选型结论，「对比两个方案」是在做比较——都归 memory_query。",
-      operation_view: "查看或管理后台异步任务，或维护/删除已入库的文档实例：① 查看作业清单、任务状态进度或取消中止任务（「任务跑完了吗」「取消作业 op-123」「队列积压多少」）；② 对已入库的文档对象执行删除（「删除 document <id>」「删除这篇文档」「把那个文档删掉」）。",
-      memory_retain: "把新内容沉淀进记忆库：整份新文件、论文、文章、文档、报告入库（存到库/存到 vault/入库/保存这份/记住这篇文章/retain this paper|document），或者陈述、记录一条工程/设计事实或心得结论（如「记录一下：页创建与模型创建共用...」只是陈述一条事实，不是管理结构化资产；但句首已声明资产实体的如「心智模型「X」：记录...」属于 mental_model）。注意：包含 reflect、询问、问一下、为什么、怎么等任何疑问或探究语气的长问句，绝对不是 memory_retain，绝不能把问题本身入库！",
-      memory_query: "从记忆库检索、反思或归纳已存的事实：召回（recall）、反思归纳（reflect）、询问图像特征与细节、翻一遍、找出/列出所有…、问「为什么」「怎么」「有没有」「是什么」等所有开放式只读问句。牢记：包含 reflect 或提问动词的探索型长句绝对属于这里，绝不能进入 memory_retain。",
-      none: "这句话跟记忆库无关：寒暄、问天气、让模型改代码/重构函数。判断依据：这句话的受益者是用户当下的对话，而不是未来的记忆检索。",
-    },
-  },
-  retrieval_depth: {
-    instructions: "已确认这是在向记忆库提问。现在判断用户期望的作答方式：是查一条具体的事实（recall），还是需要系统综合多篇记忆给出一份带依据的分析（reflect）。",
-    criteria: {
-      recall: "答案是单点事实：一个参数值、一条命令、一个结论、一个清单项。用户不需要论证过程，只要那个值。例如「当时选的什么模型」「重试上限是多少」。「查一下…的结论」没有对比对象时也是 recall——问的是一条已存结论，不是要新的分析。",
-      reflect: "答案需要综合多条记忆才能成立：比较两方案的差异与取舍、解释一个决策的原因、评估设计的利弊、综述某个主题的全貌。特征是问句里出现了对比对象、因果追问或「综合/总结/评估」这类归纳动词。",
-    },
-  },
-  retain_source: {
-    instructions: "已确认用户要把一条结论存进记忆。现在判断这条内容的载体：是直接写在指令句里，还是指向一个外部文件，还是就是刚才这段对话本身。",
-    criteria: {
-      inline: "要记的结论就写在 intent 或 content 里，拿来即用，不需要再找别处。",
-      reference: "要沉淀的是一份外部材料：file 参数指向的文件，或者论文、文章、文档、报告、综述、某次工具产出、已入库原文；指令只是说「把这份东西存起来」。整份文档入库一律是 reference。",
-      session: "用户没有给具体内容，而是指当前这段对话：「把刚才讨论的…记下来」「这次对话的结论」——内容要从会话历史里取。只有点名「刚才 / 这次对话」的场合才是 session。",
-    },
-  },
-  knowledge_base_action: {
-    instructions: "已确认用户在操作知识库的结构化资产。现在判断具体动作：先看意图动词（浏览/搜索/读/建/改/删），再结合目标是否存在（创建要求目标不存在，更新/删除要求目标已存在）。",
-    criteria: {
-      tree: "用户想看知识库的整体结构：目录树、大纲、层级、有哪些文件夹。特征是「给我看看/列出/浏览」，不针对某一篇具体页面。",
-      search: "用户想按关键词找页面，但不知道具体是哪一篇。特征是「搜/查/找/有哪些…的页面」，输出是清单而非正文。",
-      get: "用户想读某一篇已知页面的完整正文。特征是「打开/读一下/看看内容」，已点名页面名、别名或已有 id——有名字就算已知，不需要等用户给出 id。",
-      page_create: "用户要新建一篇此前不存在的页面。特征是「新建/创建/建一篇」+ 页面标题，且宾语是页面本身。容易混淆点：整份文件或文档入库不是 create（那是 memory_retain）；对已有页面做「构建/重新生成/刷新」也不是 create，而是 page_update。",
-      page_update: "用户要改一篇已有页面的标题、取材问题、归属或标签，或者要「构建/重新生成/刷新/rebuild/refresh/build」这篇已有页面的内容。特征是「更新/修改/补充/改名/构建/刷新」+ 指向已存在的页面（target 或页面名）。",
-      page_delete: "用户要删除一篇已有页面（连同子树）。特征是「删除/移除/删掉」。",
-      folder_create: "用户要新建一个用于分类的文件夹或目录。特征是「建目录/建文件夹」，不是页面。",
-    },
-  },
-  mental_model_action: {
-    instructions: "已确认用户在管理心智模型资产。现在判断具体动作：注意心智模型由系统自动归纳，refresh 是手动触发重新归纳。",
-    criteria: {
-      list: "用户想看有哪些心智模型：清单、元数据。特征是「列出/有哪些」。",
-      get: "用户想读某个心智模型的正文与支撑事实。特征是「读一下/查看…的正文」，已点名模型。",
-      create: "用户要登记一个新的心智模型。特征是「新建/创建/登记」+ 模型名。",
-      refresh: "用户要手动触发某个模型按最新记忆重新归纳。特征是「刷新/重新归纳」。",
-      delete: "用户要删除某个心智模型。特征是「删除/注销/删掉」。",
-    },
-  },
-  operation_action: {
-    instructions:
-      "已确认用户在查看或管理后台异步任务，或者维护/删除已入库的文档。现在判断具体动作：\n" +
-      "- 异步任务：list 看清单、get 查单个、cancel 中止。\n" +
-      "- 文档维护：如果指令是删除入库文档（例如「删除 document <id>」「删除文档 <id>」「删掉这篇文档」），归为 delete_document；读取文档不走这里，走 memory_query 或资源树。",
-    criteria: {
-      list: "用户想看操作列表或积压概况，不针对某一个任务。特征是「列出/有哪些/积压了多少/哪些失败了」。",
-      get: "用户想查某个具体任务的状态、进度或失败原因。特征是带 op-xxx 编号或单指某个任务。",
-      cancel: "用户要中止一个任务。特征是「取消/撤销/终止」。",
-      delete_document: "用户要删除已入库的文档（document）。特征是「删除 document <id>」「删除这篇文档」「删除文档 <id>」「把文档删掉」。",
-    },
-  },
-  target_bank: {
-    instructions: "已确认要执行的动作，现在选择目标记忆库。依据是每个 bank 的 description 职责描述与这条指令的语义匹配度：主知识库存论文结论与设计知识，agent 工作记忆库存会话决策与调试发现，归档库存已冻结资料。",
-    criteria: {},
-  },
-  inject_decision: {
-    instructions:
-      "自动召回刚取回一批候选记忆，现在只剩一个决定：这一轮要不要把它们放进模型的上下文。你是这次调用的看门人——注入会占掉上下文、也会把注意力引到别处，所以不该给的时候要给得干脆；但该给的时候不给，模型就会重复踩同一个坑、或者重新推导已经拍板的事。\n判断依据是候选与「现在正在做什么」的关系，不是相似度分数的高低：分数衡量的是字面接近，你衡量的是有没有用。候选摘要很短，常常只能看出它在讲哪个对象；拿不准「讲的是不是同一件事」时，看任务上下文里当前动作的对象与阶段。\n还有一个成本要算：这一轮已经注入过几次（injected_this_session）说明模型多半已经在用那些记忆，重复注入没有增量。",
-    criteria: {
-      inject:
-        "候选里有能直接改变下一步动作的东西：踩过的坑、已经拍板的决策、实测读数、被否决的方案。典型判据是「如果模型不知道这条，它接下来会做错一件事」——例如它正要改一个已经决定不改的接口。\n当前正好卡住（报错、测试失败、行为与预期不符），而候选命中了同类问题的处理记录，或命中导致这个症状的历史根因。\n用户刚派下新任务，候选里有它的前置约束：不许动的文件、必须遵守的流程、这个项目上已经定过的术语。\n候选补上了模型此刻缺、且它自己推不出来的那块事实。",
-      skip:
-        "关键词撞车：候选与查询共享术语，讲的却是另一件事——代码里的 model 与机器学习模型、项目名里的 graph 与图算法、库名里的 memory 与记忆库本身。\n模型正在依据同一条记忆工作：本轮或上一步的回执里已经出现过它的结论，再注入只是复读，还会占掉本该给新信息的注意力。\n与当前动作无关：候选讲的是另一个项目、另一条任务线，纯属被字面命中。\n候选只有操作流水账：「用户要求把 X 入库」「记得保留名字 Y」「用户希望记住这条」这类元信息，不是知识。\n这是裸关键词的宽召回，一条都套不上当前动作——这一轮宁可不给，也不要塞一堆边缘相关的东西。",
-    },
-  },
-};
+export const QUESTION_COPY: Readonly<Record<JudgeQuestionId, QuestionCopy>> = getBuiltinPromptPack().judge;
 
 // ─────────────────────────────────────────────────────────────
 // 题目与 state
@@ -327,12 +238,7 @@ export function buildQuestion(
     criteria[option] = copy.criteria[option] ?? null;
   }
 
-  const baseInstructions = overrides?.instructions ?? copy.instructions;
-  const instructions =
-    questionId === "action_family" || questionId === "target_bank"
-      ? `${baseInstructions}\n${MEMORY_CONTAINER_CONTEXT}`
-      : baseInstructions;
-  return { type: "choice", instructions, criteria };
+  return { type: "choice", instructions: overrides?.instructions ?? copy.instructions, criteria };
 }
 
 function optionsFor(
@@ -565,15 +471,22 @@ async function chooseBank(
   overrides?: JudgeOverrides,
   limits?: JudgeLimits,
 ): Promise<JudgeOutcome> {
-  const candidates = availableBanks.filter((bank) => allowsWrite(action, bank));
-  if (candidates.length === 0) return { status: "unresolved", reason: "ambiguous_bank", decisions };
-
   const requested = step.target === null ? null : bankKeyOf(step.target);
   if (requested !== null) {
+    const candidates = availableBanks.filter((bank) => allowsWrite(action, bank));
+    if (candidates.length === 0) return { status: "unresolved", reason: "ambiguous_bank", decisions };
     const match = candidates.find((bank) => bank.id === requested);
     if (match === undefined) return { status: "unresolved", reason: "ambiguous_bank", decisions };
     return resolved(action, match.id, decisions);
   }
+
+  // 未显式给出 target 时：写操作必须硬排除 autoTarget=false 的保护库（如 skill/规范库）。
+  const candidates = availableBanks.filter((bank) => {
+    if (!allowsWrite(action, bank)) return false;
+    if (isWriteAction(action) && bank.retain.autoTarget === false) return false;
+    return true;
+  });
+  if (candidates.length === 0) return { status: "unresolved", reason: "ambiguous_bank", decisions };
   if (candidates.length === 1) return resolved(action, candidates[0]?.id ?? null, decisions);
 
   const answer = await askChoice("target_bank", step, candidates, env, judgePort, { action }, overrides);

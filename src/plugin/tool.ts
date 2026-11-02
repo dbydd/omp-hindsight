@@ -20,6 +20,7 @@ import { isRecord } from "../core/guards.ts";
 import { isWriteAction, type ExecutionEnv, type JudgeAnswer, type JudgePort } from "../core/judge.ts";
 import { executeToolInput, type ToolOutcome } from "../core/ops.ts";
 import { matchPath } from "../core/paths.ts";
+import { getBuiltinPromptPack, type PromptPack } from "../core/prompt-pack.ts";
 import type { NameLookupPort } from "../core/slots.ts";
 import type { HindsightConfig, HindsightToolInput, Receipt } from "../core/types.ts";
 import { describeDiscovery, getRuntime, loadConfig } from "./runtime.ts";
@@ -32,15 +33,12 @@ import { describeDiscovery, getRuntime, loadConfig } from "./runtime.ts";
 const descriptionOf = (name: "intent" | "content" | "file" | "target"): string =>
   TOOL_PARAMETERS[name]?.description ?? name;
 
-const TOOL_DESCRIPTION = [
-  "The single surface for the Hindsight memory bank. ",
-  "State what to do in one short intent; the judge model sees only the intent, so keep payload text out of it. ",
-  "Put long payload text in content, and point file at a local path (the plugin reads the bytes directly, never through the model); ",
-  "name an explicit target as a hindsight:// path or a short bank id. ",
-  "Retaining is not an end-of-session ritual: when a decision, a measured number with its provenance, a debugging root cause, ",
-  "or a reusable conclusion shows up mid-task, retain it right then in one call and keep working. ",
-  "Success returns a receipt plus hindsight:// addresses you can open with read; failure returns a diagnosis and the next call to copy.",
-].join("");
+const PARAMETERS = z.object({
+  intent: z.string().min(1).describe(descriptionOf("intent")),
+  content: z.string().optional().describe(descriptionOf("content")),
+  file: z.string().optional().describe(descriptionOf("file")),
+  target: z.string().optional().describe(descriptionOf("target")),
+});
 
 // ─────────────────────────────────────────────────────────────
 // 随手记提醒
@@ -51,9 +49,6 @@ const TOOL_DESCRIPTION = [
 
 const RETAIN_NUDGE_TYPE = "hindsight.retain-nudge";
 
-const RETAIN_NUDGE_TEXT =
-  "Your session notes just captured something durable: any decision, measured number with its provenance, or debugging root cause in them belongs in the Hindsight memory bank now, in one call, instead of being re-derived later. Write it to the configured bank; the judge picks which one.";
-
 let retainNudgeSent = false;
 
 /** 有可写落点才提醒：全部库只读或 retain.mode=off 时，提醒只会把模型引向必被拒绝的调用。 */
@@ -61,19 +56,17 @@ function canRetainAnywhere(config: HindsightConfig): boolean {
   return config.banks.some((bank) => bank.access === "read-write" && bank.retain.mode !== "off");
 }
 
-export function registerHindsightTool(pi: ExtensionAPI): void {
-  const parameters = z.object({
-    intent: z.string().min(1).describe(descriptionOf("intent")),
-    content: z.string().optional().describe(descriptionOf("content")),
-    file: z.string().optional().describe(descriptionOf("file")),
-    target: z.string().optional().describe(descriptionOf("target")),
-  });
+let toolHost: ExtensionAPI | undefined;
+let activeToolDescription: string | undefined;
 
+function registerTool(pi: ExtensionAPI, description: string): void {
+  toolHost = pi;
+  activeToolDescription = description;
   pi.registerTool({
     name: "hindsight",
     label: "Hindsight",
-    description: TOOL_DESCRIPTION,
-    parameters,
+    description,
+    parameters: PARAMETERS,
     approval: "read",
     strict: true,
     loadMode: "essential",
@@ -82,7 +75,7 @@ export function registerHindsightTool(pi: ExtensionAPI): void {
       if (!isRecord(raw) || typeof raw.intent !== "string" || raw.intent.trim().length === 0) {
         return reply("Invalid arguments: intent must not be empty; state what to do in one sentence.", null);
       }
-      const parsed = parameters.safeParse(raw);
+      const parsed = PARAMETERS.safeParse(raw);
       if (!parsed.success) return reply(`Invalid arguments: ${parsed.error.message}`, null);
 
       const input: HindsightToolInput = parsed.data;
@@ -102,9 +95,10 @@ export function registerHindsightTool(pi: ExtensionAPI): void {
       }
 
       const outcome = await executeToolInput(input, runtime.config, runtime.client, createJudgePort(ctx), env, {
-        decompose: createDecomposerPort(pi, ctx, runtime.config),
+        decompose: createDecomposerPort(pi, ctx, runtime.config, runtime.promptPack),
         nameLookup: createNameLookupPort(runtime.client),
         queue: runtime.queue,
+        judgeOverrides: runtime.promptPack.judge,
       });
 
       const executed = outcome.status === "ok" ? outcome.actions : outcome.completed;
@@ -124,7 +118,19 @@ export function registerHindsightTool(pi: ExtensionAPI): void {
       return reply(renderOutcome(outcome), outcome);
     },
   });
+}
 
+export function registerHindsightTool(pi: ExtensionAPI): void {
+  registerTool(pi, getBuiltinPromptPack().guidance.toolDescription);
+}
+
+/**
+ * 会话装配读到生效提示词包后切换工具描述：文案来自提示词包，而工具在会话开始前就
+ * 已按内置包注册过一次，这里按包内容重新注册；描述没变就不重复注册。
+ */
+export function applyPromptPack(pack: PromptPack): void {
+  if (toolHost === undefined || activeToolDescription === pack.guidance.toolDescription) return;
+  registerTool(toolHost, pack.guidance.toolDescription);
 }
 
 /**
@@ -153,7 +159,7 @@ export function registerRetainNudge(pi: ExtensionAPI): void {
       pi.sendMessage(
         {
           customType: RETAIN_NUDGE_TYPE,
-          content: RETAIN_NUDGE_TEXT,
+          content: runtime.promptPack.guidance.retainNudgeText,
           display: false,
           details: { trigger: event.toolCallId },
           attribution: "agent",
@@ -183,24 +189,6 @@ function reply(text: string, outcome: ToolOutcome | null): ToolReply {
 // ─────────────────────────────────────────────────────────────
 
 /**
- * 判定题的 instruction 模板微调入口。
- *
- * 题目的结构、选项集合与判据都属于 core：选项按 SSOT 与配置即时生成（选库的判据就是
- * `banks[].description`），改结构会让 INV-4 的校验失去依据。这里只允许替换题面措辞，
- * 供实测调优注入；没有登记的题号或没有给出的字段一律保持 core 的默认文案。
- */
-export interface JudgeCopyOverrides {
-  readonly [questionId: string]: { readonly instructions?: string };
-}
-
-let judgeCopyOverrides: JudgeCopyOverrides = {};
-
-/** 生命周期装配拿到配置后调用；下一次工具调用即生效，无需重建工具。 */
-export function setJudgeCopyOverrides(overrides: JudgeCopyOverrides): void {
-  judgeCopyOverrides = overrides;
-}
-
-/**
  * 判定端口只需要这四样宿主事实；收窄到 `Pick` 之后，工具调用之外的装配也能接同一个端口。
  *
  * core 的题目形状与 omp 的 `ChoiceQuestion` 同形；判定结果只留 choice/confidence/
@@ -219,22 +207,16 @@ export function createJudgePort(ctx: JudgeHost): JudgePort {
       purpose: "hindsight",
       onUsage: journalJudgmentUsage(ctx.sessionManager),
     });
-    const tuned = Object.fromEntries(
-      Object.entries(questions).map(([id, question]) => {
-        const instructions = judgeCopyOverrides[id]?.instructions;
-        return [id, instructions === undefined ? question : { ...question, instructions }];
-      }),
-    );
     const result = await judge.judge({
       state: state as JudgmentState,
-      questions: tuned as unknown as Questions,
+      questions: questions as unknown as Questions,
     });
     const answers: Record<string, JudgeAnswer> = {};
     for (const [id, answer] of Object.entries(result.answers)) {
       if (answer.type !== "choice") continue;
       answers[id] = { choice: answer.choice, confidence: answer.confidence, probabilities: answer.probabilities };
     }
-    const missing = Object.keys(tuned).filter((id) => answers[id] === undefined);
+    const missing = Object.keys(questions).filter((id) => answers[id] === undefined);
     if (missing.length > 0) throw new Error(`Judge did not answer: ${missing.join(", ")}`);
     return answers;
   };
@@ -244,18 +226,12 @@ export function createJudgePort(ctx: JudgeHost): JudgePort {
 // 解构端口：decomposerRole
 // ─────────────────────────────────────────────────────────────
 
-const DECOMPOSER_SYSTEM = [
-  "你在为 hindsight 记忆工具解构一条输入，产出的是这个工具的操作意图，不是 shell 脚本。",
-  '输出严格 JSON：{"steps":[{"command":"…","payload":null,"file":null,"target":null}]}',
-  "- command：一步 hindsight 操作的自然语言意图，例如「查 retain 队列死锁的处理记录」「把这条结论记下来」。禁止出现 grep、git、ls、cat 等命令。",
-  "- payload：这一步要写入的正文，一字不改，没有就 null。同一句里并列出现多段各有载体的写入（例如「论文事实：……。我的心得：……」写进不同的库）时，每一步只带属于自己的那一段，绝不把整段原文复制到每一步。",
-  "- 只有确实无法归属到某一步的整段正文才落在最后一步；工具的 content/file 参数就是给这种整体载荷用的。",
-  "- file：原文显式给出的本地文件路径，没有就 null。",
-  "- target：原文显式给出的 hindsight:// 虚拟路径或 bank 短名，没有就 null；不要把自己编的路径放进来。",
-  "只有一件事就给单步，最多 6 步。不要解释，不要 Markdown 围栏。",
-].join("\n");
-
-export function createDecomposerPort(pi: Pick<ExtensionAPI, "logger">, ctx: JudgeHost, config: HindsightConfig): DecomposerPort {
+export function createDecomposerPort(
+  pi: Pick<ExtensionAPI, "logger">,
+  ctx: JudgeHost,
+  config: HindsightConfig,
+  pack: PromptPack,
+): DecomposerPort {
   return async (intent) => {
     try {
       const settings = (await Settings.current) ?? (await Settings.loadReadOnly({ cwd: ctx.cwd }));
@@ -266,7 +242,7 @@ export function createDecomposerPort(pi: Pick<ExtensionAPI, "logger">, ctx: Judg
       const response = await completeSimple(
         model,
         {
-          systemPrompt: [DECOMPOSER_SYSTEM],
+          systemPrompt: [pack.decomposer.system],
           messages: [{ role: "user", content: [{ type: "text", text: intent }], timestamp: Date.now() }],
         },
         {

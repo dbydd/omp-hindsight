@@ -12,7 +12,7 @@
 
 ### 1. 连接与配置来源（门牌自报）
 
-`hindsight://` 根门牌报：状态 healthy（1.1.0），baseUrl `http://127.0.0.1:18888`，配置来源同时列出全局 `/Users/dbydd/.omp/agent/hindsight-omp.json` 与项目 `.omp/hindsight-omp.json`。生效配置：
+`hindsight://` 根门牌报：状态 healthy（1.1.0），baseUrl `http://127.0.0.1:18888`，配置来源同时列出全局 `~/.omp/agent/hindsight-omp.json` 与项目 `.omp/hindsight-omp.json`。生效配置：
 
 | bank 短名 | bankId | access | retain 模式 |
 | --- | --- | --- | --- |

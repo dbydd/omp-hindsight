@@ -1,0 +1,1 @@
+Your session notes just captured something durable: any decision, measured number with its provenance, or debugging root cause in them belongs in the Hindsight memory bank now, in one call, instead of being re-derived later. Write it to the configured bank; the judge picks which one.

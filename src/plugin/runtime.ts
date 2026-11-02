@@ -15,6 +15,7 @@ import { parseConfig } from "../core/config.ts";
 import { isRecord } from "../core/guards.ts";
 import { RetryQueue } from "../core/queue.ts";
 import type { BankConfig, ConfigProblem, HindsightConfig } from "../core/types.ts";
+import { getBuiltinPromptPack, type PromptPack } from "../core/prompt-pack.ts";
 
 // ─────────────────────────────────────────────────────────────
 // 配置发现
@@ -254,10 +255,13 @@ export interface RuntimeOptions {
   readonly paths: ConfigPaths;
   readonly loaded: readonly string[];
   readonly mainSessionId?: string | null;
+  /** 生效的提示词包；缺省为内置包（测试与不经会话装配的构造点不需要先读盘）。 */
+  readonly promptPack?: PromptPack;
 }
 
 export class HindsightPluginRuntime {
   readonly config: HindsightConfig;
+  readonly promptPack: PromptPack;
   readonly client: HindsightHttpClient;
   readonly queue: RetryQueue;
   readonly paths: ConfigPaths;
@@ -271,6 +275,7 @@ export class HindsightPluginRuntime {
 
   constructor(options: RuntimeOptions) {
     this.config = options.config;
+    this.promptPack = options.promptPack ?? getBuiltinPromptPack();
     this.client = httpClientFromConfig(options.config);
     this.queue = new RetryQueue({
       projectRoot: options.cwd,

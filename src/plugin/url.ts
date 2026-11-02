@@ -975,7 +975,7 @@ async function configView(request: ViewRequest): Promise<InternalResource> {
       `- \`${bank.id}\`（bankId \`${bank.bankId}\`，${bank.access}）`,
       `  - 职责描述：${bank.description ?? "**缺失** —— judge 选库时只剩短名可判，请在 banks[].description 补一句"}`,
       `  - recall：${bank.recall.enabled ? "开" : "关"}，maxTokens ${bank.recall.maxTokens}，coldStart ${bank.recall.coldStart}，tagsMatch ${bank.recall.tagsMatch}，tags [${bank.recall.tags.join("、")}]`,
-      `  - retain：${bank.retain.mode}，scopes ${JSON.stringify(bank.retain.scopes)}，constantTags [${bank.retain.constantTags.join("、")}]`,
+      `  - retain：${bank.retain.mode}，scopes ${JSON.stringify(bank.retain.scopes)}，constantTags [${bank.retain.constantTags.join("、")}]${bank.retain.autoTarget === false ? "，**自动选库排除（需显式 target）**" : ""}`,
     );
   }
   lines.push("", "## 全局键", "");

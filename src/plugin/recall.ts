@@ -12,6 +12,7 @@ import { RECALL_FENCE } from "../../ssot/spec.ts";
 import type { RecallOptions } from "../core/client.ts";
 import { decideInjection, type ChoiceQuestion, type ExecutionEnv, type JudgePort } from "../core/judge.ts";
 import { buildPath } from "../core/paths.ts";
+import type { PromptPack } from "../core/prompt-pack.ts";
 import type { BankConfig, HindsightConfig, InternalPath, TagsMatch } from "../core/types.ts";
 import type { HindsightPluginRuntime } from "./runtime.ts";
 
@@ -308,7 +309,7 @@ export async function performAdaptiveRecall(
       regular.length === 0
         ? []
         : needsRerank
-          ? (await rerank(config, trimmed, regular, judgePort, context)).slice(0, topK)
+          ? (await rerank(config, runtime.promptPack, trimmed, regular, judgePort, context)).slice(0, topK)
           : byScore(regular).slice(0, topK);
 
     const pooled = [...chosen, ...antiPatterns];
@@ -334,6 +335,7 @@ export async function performAdaptiveRecall(
       config,
       options.env ?? { role: null, isReadonly: false },
       judgePort,
+      runtime.promptPack.judge,
     );
     if (!injection.inject) {
       warn("hindsight.recall.inject_skipped", {
@@ -446,6 +448,7 @@ function budgetOf(value: string): RecallBudget | undefined {
  */
 async function rerank(
   config: HindsightConfig,
+  pack: PromptPack,
   query: string,
   hits: readonly BankHit[],
   judgePort: JudgePort,
@@ -463,8 +466,7 @@ async function rerank(
 
   const question: ChoiceQuestion = {
     type: "choice",
-    instructions:
-      "不同记忆库各自召回了一批候选。结合 focus 里的 query 与 task_context（当前任务的最近几轮取样）判断哪一条最贴合当前任务；没有 task_context 时只依据 query。概率要覆盖候选清单里的每一项，贴题的给高分，边缘相关的给低分。",
+    instructions: pack.recall.rerankInstructions,
     criteria: options,
   };
   const answers = await judgePort(

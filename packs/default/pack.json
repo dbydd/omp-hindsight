@@ -1,0 +1,5 @@
+{
+  "name": "default",
+  "version": "1.0.0",
+  "description": "omp-hindsight 内置提示词包：judge 判据、解构器系统提示、召回重排指令与工具文案。"
+}
