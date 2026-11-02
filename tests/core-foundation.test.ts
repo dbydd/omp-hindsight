@@ -254,10 +254,12 @@ describe("config: 解析与默认值", () => {
     expect(config.recallTimeoutMs).toBe(CONFIG_KEYS.recallTimeoutMs?.default as number);
     expect(config.injectTimeoutMs).toBe(CONFIG_KEYS.injectTimeoutMs?.default as number);
     expect(config.autoRecallTypes).toEqual(CONFIG_KEYS.autoRecallTypes?.default as string[]);
-    expect(config.pageRefreshEveryTurns).toBe(CONFIG_KEYS.pageRefreshEveryTurns?.default as number);
     expect(config.persistDisplay).toBe(CONFIG_KEYS.persistDisplay?.default as boolean);
-    expect(config.autoFlushSessionOn).toEqual(CONFIG_KEYS.autoFlushSessionOn?.default as string[]);
-    expect(config.autoFlushPendingOn).toEqual(CONFIG_KEYS.autoFlushPendingOn?.default as string[]);
+    expect(config.recallTriggers).toEqual(CONFIG_KEYS.recallTriggers?.default as string[]);
+    expect(config.recallInSubagents).toBe(CONFIG_KEYS.recallInSubagents?.default as boolean);
+    expect(config.judgeAmbiguousConfidence).toBe(
+      CONFIG_KEYS.judgeAmbiguousConfidence?.default as number,
+    );
     expect(config.decomposerRole).toBe(CONFIG_KEYS.decomposerRole?.default as string);
     expect(config.logLevel as string).toBe(CONFIG_KEYS.logLevel?.default as string);
     expect(config.defaultRole).toBeNull();

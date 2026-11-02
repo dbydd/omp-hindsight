@@ -37,8 +37,29 @@ const TOOL_DESCRIPTION = [
   "State what to do in one short intent; the judge model sees only the intent, so keep payload text out of it. ",
   "Put long payload text in content, and point file at a local path (the plugin reads the bytes directly, never through the model); ",
   "name an explicit target as a hindsight:// path or a short bank id. ",
+  "Retaining is not an end-of-session ritual: when a decision, a measured number with its provenance, a debugging root cause, ",
+  "or a reusable conclusion shows up mid-task, retain it right then in one call and keep working. ",
   "Success returns a receipt plus hindsight:// addresses you can open with read; failure returns a diagnosis and the next call to copy.",
 ].join("");
+
+// ─────────────────────────────────────────────────────────────
+// 随手记提醒
+//   写库必须由模型发起：插件不替会话自动 retain。能做的只有把时机提示到模型眼前——
+//   模型刚写 session note 时，说明它此刻正在整理可复用结论，这正是 retain 的时机。
+//   一次会话只提醒一次：反复提醒会退化成背景噪声，模型学会忽略它。
+// ─────────────────────────────────────────────────────────────
+
+const RETAIN_NUDGE_TYPE = "hindsight.retain-nudge";
+
+const RETAIN_NUDGE_TEXT =
+  "Your session notes just captured something durable: any decision, measured number with its provenance, or debugging root cause in them belongs in the Hindsight memory bank now, in one call, instead of being re-derived later. Write it to the configured bank; the judge picks which one.";
+
+let retainNudgeSent = false;
+
+/** 有可写落点才提醒：全部库只读或 retain.mode=off 时，提醒只会把模型引向必被拒绝的调用。 */
+function canRetainAnywhere(config: HindsightConfig): boolean {
+  return config.banks.some((bank) => bank.access === "read-write" && bank.retain.mode !== "off");
+}
 
 export function registerHindsightTool(pi: ExtensionAPI): void {
   const parameters = z.object({
@@ -102,6 +123,49 @@ export function registerHindsightTool(pi: ExtensionAPI): void {
       });
       return reply(renderOutcome(outcome), outcome);
     },
+  });
+
+}
+
+/**
+ * 会话笔记写完后的「该记就记」提醒。
+ *
+ * 与工具注册分开：它监听的是宿主事件而不是工具面，装配点也不同（入口 index 同时调用两者）。
+ * 提醒只发一次——它该纠正的是「整场会话都没想起来 retain」这种模式，而不是每写一次笔记就催一次。
+ */
+export function registerRetainNudge(pi: ExtensionAPI): void {
+  // 新会话与压缩后都重新给一次机会：压缩把早先的提醒挤出上下文，这次提醒才算「没提醒过」。
+  pi.on("session_start", (_event, ctx) => {
+    if (ctx.agent.kind !== "sub") retainNudgeSent = false;
+  });
+  pi.on("session_compact", (_event, ctx) => {
+    if (ctx.agent.kind !== "sub") retainNudgeSent = false;
+  });
+
+  pi.on("tool_execution_end", (event, ctx) => {
+    if (event.toolName !== "context_notes" || retainNudgeSent) return;
+    // 子代理只读（INV-6），提示它去 retain 等于提示一次必然失败的调用。
+    if (ctx.agent.kind === "sub") return;
+    const runtime = getRuntime();
+    if (runtime === undefined || !canRetainAnywhere(runtime.config)) return;
+    retainNudgeSent = true;
+    try {
+      pi.sendMessage(
+        {
+          customType: RETAIN_NUDGE_TYPE,
+          content: RETAIN_NUDGE_TEXT,
+          display: false,
+          details: { trigger: event.toolCallId },
+          attribution: "agent",
+        },
+        { deliverAs: "aside" },
+      );
+    } catch (error) {
+      // 提醒是加分项：注入失败只记一条，绝不把异常抛回宿主的工具事件。
+      pi.logger.warn("hindsight.nudge.failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   });
 }
 

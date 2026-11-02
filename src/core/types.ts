@@ -101,9 +101,19 @@ export interface HindsightConfig {
   readonly recallContextRoles: readonly string[];
   readonly recallContextStrategy: RecallContextStrategy;
   readonly recallBudget: string;
+  /** 自动召回的触发点：prompt | turn-end | interval。 */
+  readonly recallTriggers: readonly string[];
+  /** 子代理是否可自动召回（召回只读，写操作仍由 INV-6 拦截）。 */
+  readonly recallInSubagents: boolean;
   readonly recallDebounceTurns: number;
   readonly recallMaxQueryChars: number;
+  readonly recallIntentMaxChars: number;
+  readonly recallSignatureMaxChars: number;
+  readonly recallTurnSampleChars: number;
   readonly recallTopK: number;
+  readonly recallRerankCandidateLimit: number;
+  readonly recallAntiPatternLimit: number;
+  readonly recallPreviewChars: number;
   readonly recallTimeoutMs: number;
   readonly recallMode: string;
   readonly recallEveryNTurns: number;
@@ -114,11 +124,9 @@ export interface HindsightConfig {
   readonly recallQueryPreamble: string;
   readonly recallAntiPatternGuard: boolean;
   readonly recallInjectPosition: string;
-  readonly pageRefreshEveryTurns: number;
   readonly persistDisplay: boolean;
+  readonly judgeAmbiguousConfidence: number;
   readonly retryQueueMaxAttempts: number;
-  readonly autoFlushSessionOn: readonly string[];
-  readonly autoFlushPendingOn: readonly string[];
   readonly decomposerRole: string;
   readonly defaultRole: string | null;
   readonly logLevel: LogLevel;

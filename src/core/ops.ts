@@ -20,6 +20,7 @@ import {
   decideCardinality,
   isWriteAction,
   type ExecutionEnv,
+  type JudgeLimits,
   type JudgeOverrides,
   type JudgePort,
   type ResolvedActionId,
@@ -509,7 +510,8 @@ export async function executeToolInput(
   ports: ToolPorts = {},
 ): Promise<ToolOutcome> {
   const gate = inputAsStep(input);
-  const cardinality = await decideCardinality(gate, config.banks, env, judgePort, ports.judgeOverrides);
+  const limits: JudgeLimits = { ambiguousConfidence: config.judgeAmbiguousConfidence };
+  const cardinality = await decideCardinality(gate, config.banks, env, judgePort, ports.judgeOverrides, limits);
   const steps = cardinality.composite ? await decomposeInput(input, ports.decompose) : [gate];
 
   const actions: ActionSuccess[] = [];
@@ -526,7 +528,7 @@ export async function executeToolInput(
       });
     };
 
-    const decision = await decideAction(step, config.banks, env, judgePort, ports.judgeOverrides);
+    const decision = await decideAction(step, config.banks, env, judgePort, ports.judgeOverrides, limits);
     if (decision.status === "unresolved") {
       fail(hint(decision.reason, `${label}：${describeUnresolved(decision.reason, config.banks)}`));
       continue;

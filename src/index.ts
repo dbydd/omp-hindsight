@@ -8,7 +8,7 @@
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { lifecycleHost, registerLifecycle } from "./plugin/lifecycle.ts";
 import { setRecallLogger } from "./plugin/recall.ts";
-import { registerHindsightTool } from "./plugin/tool.ts";
+import { registerHindsightTool, registerRetainNudge } from "./plugin/tool.ts";
 import { registerMessageRenderer, registerUi } from "./plugin/ui/index.ts";
 import { registerHindsightUrls } from "./plugin/url.ts";
 
@@ -17,6 +17,7 @@ export default function ompHindsight(pi: ExtensionAPI): void {
   // 资源树是只读的进程级能力：handler 无状态，注册一次即可覆盖所有会话。
   registerHindsightUrls();
   registerHindsightTool(pi);
+  registerRetainNudge(pi);
   registerMessageRenderer(pi);
   registerLifecycle(pi);
   registerUi(pi, lifecycleHost);

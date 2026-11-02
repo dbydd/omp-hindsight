@@ -262,24 +262,32 @@ const CONFIG_KEYS_LITERAL = {
   strip:                      { scope: "global", type: "json" },
   // recall 行为
   recallBudget:               { scope: "global", type: "string", default: "mid", constraint: "low | mid | high" },
-  recallContextTurns:         { scope: "global", type: "number", default: 2 },
-  recallContextRoles:         { scope: "global", type: "string[]", default: ["user", "assistant", "tool"] },
+  recallTriggers:             { scope: "global", type: "string[]", default: ["prompt", "turn-end"], constraint: "prompt | turn-end | interval；自动召回的触发点集合，空数组等价 explicit-only" },
+  recallInSubagents:          { scope: "global", type: "boolean", default: true, constraint: "子代理是否可自动召回：召回是只读的，写操作仍由 INV-6 拦截" },
+  recallContextTurns:         { scope: "global", type: "number", default: 2, constraint: "取样最近几轮对话作为任务上下文；每轮每种已配置角色各取最新一条" },
+  recallContextRoles:         { scope: "global", type: "string[]", default: ["user", "assistant", "tool"], constraint: "任务上下文取样哪些角色：user | assistant | tool | toolResult" },
   recallContextStrategy:      { scope: "global", type: "string", default: "adaptive", constraint: "adaptive | user_only" },
   recallDebounceTurns:        { scope: "global", type: "number", default: 3, constraint: "连续无焦点位移跳过刷库的轮数，0为不防抖" },
   recallMaxQueryChars:        { scope: "global", type: "number", default: 800 },
+  recallIntentMaxChars:       { scope: "global", type: "number", default: 240, constraint: "意图句进查询前的截断长度" },
+  recallSignatureMaxChars:    { scope: "global", type: "number", default: 200, constraint: "报错指纹进查询前的截断长度" },
+  recallTurnSampleChars:      { scope: "global", type: "number", default: 4000, constraint: "每轮消息取样尾段字符数" },
   recallTopK:                 { scope: "global", type: "number", default: 8, constraint: "每轮最多召回条数" },
+  recallRerankCandidateLimit: { scope: "global", type: "number", default: 12, constraint: "送进 judge 重排的候选上限；判定答案空间随候选数线性变大" },
+  recallAntiPatternLimit:     { scope: "global", type: "number", default: 3, constraint: "反向踩坑通道最多注入条数" },
+  recallPreviewChars:         { scope: "global", type: "number", default: 160, constraint: "候选与命中事实的摘要长度" },
   recallTimeoutMs:            { scope: "global", type: "number", default: 10000 },
   recallMode:                 { scope: "global", type: "string", default: "every-turn", constraint: "every-turn | every-n-turns | explicit-only" },
   recallEveryNTurns:          { scope: "global", type: "number", default: 5, constraint: "recallMode=every-n-turns 时生效" },
   recallMinIntervalMs:        { scope: "global", type: "number", default: 0, constraint: "两次 recall 的最小间隔毫秒" },
-  injectTimeoutMs:            { scope: "global", type: "number", default: 7000 },
+  injectTimeoutMs:            { scope: "global", type: "number", default: 7000, constraint: "context 注入路径的总超时，超时本轮放弃注入" },
   autoRecallTypes:            { scope: "global", type: "string[]", default: ["observation"] },
   recallPreferObservations:   { scope: "global", type: "boolean", default: true },
   recallQueryPreamble:        { scope: "global", type: "string", default: "omp coding task memory lookup." },
   recallAntiPatternGuard:     { scope: "global", type: "boolean", default: true, constraint: "true 时启用反向踩坑熔断通道" },
-  recallInjectPosition:       { scope: "global", type: "string", default: "append", constraint: "append | prepend" },
-  pageRefreshEveryTurns:      { scope: "global", type: "number", default: 20 },
-  persistDisplay:             { scope: "global", type: "boolean", default: false },
+  recallInjectPosition:       { scope: "global", type: "string", default: "append", constraint: "append | prepend；注入消息在待发送序列里的位置" },
+  persistDisplay:             { scope: "global", type: "boolean", default: false, constraint: "prompt 触发的召回是否作为持久消息留在会话里；false 则只进模型上下文" },
+  judgeAmbiguousConfidence:   { scope: "global", type: "number", default: 0.35, constraint: "判定答案低于此置信度视为歧义，按 FAILURE_MODES 降级而不是硬猜" },
   // 全量会话回写已废弃（INV-14：聊天流水账严禁入库）；flush 仅保留队列重试触发
   retryQueueMaxAttempts:      { scope: "global", type: "number", default: 5, constraint: "离线重试上限，超限移入 failed" },
   // 运行
@@ -435,16 +443,11 @@ export const CONTEXT_PROJECTIONS: readonly ContextProjectionSpec[] = [
   {
     questionId: "candidate_rerank",
     stage: "tier3",
-    focus: ["query"],
+    // task_context 是最近几轮对话的取样：没有它，重排只能在「一句查询 + 若干摘要」上瞎猜，
+    // 长任务里提示第一句早已不是当前焦点。它属于投影白名单内的结构化摘要，不是原始正文。
+    focus: ["query", "task_context"],
     groundTruth: ["candidates:index,bank,summary"],
     forbidden: ["full_document_text", "unretrieved_banks"],
-  },
-  {
-    questionId: "recall_relevance",
-    stage: "recall",
-    focus: ["execution_focus:error_fingerprint,plan_subgoal"],
-    groundTruth: ["candidate_convention:summary"],
-    forbidden: ["unrelated_tool_diffs", "full_chat_transcript"],
   },
 ] as const;
 

@@ -193,16 +193,41 @@ describe("plugin/url: internal URL 协议注册与解析", () => {
 });
 
 describe("plugin/recall: 自适应提取与防抖", () => {
+  /** 取样与截断参数现在全部来自配置，测试也用真实解析出来的默认值。 */
+  const recallConfig = (() => {
+    const parsed = parseConfig(
+      {
+        baseUrl: "http://127.0.0.1:8888",
+        banks: [
+          {
+            id: "vault",
+            bankId: "vault-id",
+            access: "read-write",
+            retain: { mode: "manual", scopes: "per_tag", constantTags: ["harness:omp"] },
+          },
+        ],
+      },
+      { role: "main" },
+    );
+    if (!parsed.ok) throw new Error(`测试配置应当合法：${JSON.stringify(parsed.problems)}`);
+    return parsed.config;
+  })();
+
   test("从报错信息中优先提取错误指纹", () => {
     const errorToolResult = "Error: ORA-01461: can bind a LONG value only for insert into a LONG column\n  at execute()";
-    const { query, isError } = buildAdaptiveRecallQuery("执行数据库写入", { toolResult: errorToolResult });
+    const { query, isError } = buildAdaptiveRecallQuery("执行数据库写入", recallConfig, {
+      lastTurn: { toolResult: errorToolResult },
+    });
 
     expect(isError).toBe(true);
     expect(query).toContain("ORA-01461");
   });
 
   test("在正常执行流中提取子意图", () => {
-    const { query, isError } = buildAdaptiveRecallQuery("正在配置向量索引。接下来准备调优参数。");
+    const { query, isError } = buildAdaptiveRecallQuery(
+      "正在配置向量索引。接下来准备调优参数。",
+      recallConfig,
+    );
     expect(isError).toBe(false);
     expect(query).toBe("正在配置向量索引");
   });

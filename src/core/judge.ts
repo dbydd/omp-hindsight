@@ -165,6 +165,20 @@ export interface ExecutionEnv {
 /** 文档 §七：低于这个置信度视为歧义，需要按规则降级而不是硬猜。 */
 export const MAX_AMBIGUOUS_CONFIDENCE = 0.35;
 
+/**
+ * 歧义阈值的调用点覆盖：判定质量因角色而异，同一条线不该写死在每个比较里。
+ * 缺省仍是 `MAX_AMBIGUOUS_CONFIDENCE`，测试与老调用方无需改动。
+ */
+export interface JudgeLimits {
+  /** 低于此置信度的答案视为歧义，按 FAILURE_MODES 降级而不是硬猜。 */
+  readonly ambiguousConfidence?: number;
+}
+
+/** 阈值只有一个来源：cardinality、action_family、retrieval_depth、target_bank 必须同步。 */
+function ambiguousThreshold(limits?: JudgeLimits): number {
+  return limits?.ambiguousConfidence ?? MAX_AMBIGUOUS_CONFIDENCE;
+}
+
 // ─────────────────────────────────────────────────────────────
 // 题目判据
 //   结构在 SSOT，正文在这里；类型按 JudgeQuestionId 收口，SSOT 新增题目会直接编译失败。
@@ -392,10 +406,11 @@ export async function decideCardinality(
   env: ExecutionEnv,
   judgePort: JudgePort,
   overrides?: JudgeOverrides,
+  limits?: JudgeLimits,
 ): Promise<CardinalityDecision> {
   const answer = await askChoice("intent_cardinality", step, availableBanks, env, judgePort, {}, overrides);
   // 置信度低时按 composite 走：解构是物理切分，切不开会退回原样一步，代价远小于漏切。
-  if (answer.confidence < MAX_AMBIGUOUS_CONFIDENCE) return { composite: true, confidence: answer.confidence };
+  if (answer.confidence < ambiguousThreshold(limits)) return { composite: true, confidence: answer.confidence };
   return { composite: answer.choice === "composite", confidence: answer.confidence };
 }
 
@@ -428,20 +443,21 @@ export async function decideAction(
   env: ExecutionEnv,
   judgePort: JudgePort,
   overrides?: JudgeOverrides,
+  limits?: JudgeLimits,
 ): Promise<JudgeOutcome> {
   const decisions: JudgeDecision[] = [];
 
   const familyAnswer = await askChoice("action_family", step, availableBanks, env, judgePort, {}, overrides);
   decisions.push(record("action_family", familyAnswer));
-  if (familyAnswer.confidence < MAX_AMBIGUOUS_CONFIDENCE) {
+  if (familyAnswer.confidence < ambiguousThreshold(limits)) {
     return { status: "unresolved", reason: "unresolved_intent", decisions };
   }
 
   const family = familyAnswer.choice as ActionFamily;
   if (family === "none") return resolved("nothing", null, decisions);
 
-  const action = await specialization(family, step, availableBanks, env, judgePort, decisions, overrides);
-  return chooseBank(action, step, availableBanks, env, judgePort, decisions, overrides);
+  const action = await specialization(family, step, availableBanks, env, judgePort, decisions, overrides, limits);
+  return chooseBank(action, step, availableBanks, env, judgePort, decisions, overrides, limits);
 }
 
 async function specialization(
@@ -452,12 +468,13 @@ async function specialization(
   judgePort: JudgePort,
   decisions: JudgeDecision[],
   overrides?: JudgeOverrides,
+  limits?: JudgeLimits,
 ): Promise<ResolvedActionId> {
   switch (family) {
     case "memory_query": {
       const depth = await askChoice("retrieval_depth", step, availableBanks, env, judgePort, {}, overrides);
       // 文档 §七：recall 与 reflect 之间均摊时优先取成本更低的 recall。
-      const choice = depth.confidence < MAX_AMBIGUOUS_CONFIDENCE ? "recall" : depth.choice;
+      const choice = depth.confidence < ambiguousThreshold(limits) ? "recall" : depth.choice;
       decisions.push(record("retrieval_depth", { ...depth, choice }));
       return choice === "reflect" ? "reflect" : "recall";
     }
@@ -517,6 +534,7 @@ async function chooseBank(
   judgePort: JudgePort,
   decisions: JudgeDecision[],
   overrides?: JudgeOverrides,
+  limits?: JudgeLimits,
 ): Promise<JudgeOutcome> {
   const candidates = availableBanks.filter((bank) => allowsWrite(action, bank));
   if (candidates.length === 0) return { status: "unresolved", reason: "ambiguous_bank", decisions };
@@ -531,6 +549,10 @@ async function chooseBank(
 
   const answer = await askChoice("target_bank", step, candidates, env, judgePort, { action }, overrides);
   decisions.push(record("target_bank", answer));
+  // 选库决定写到哪里：低置信度猜错库的代价远高于退回让调用方补 target。
+  if (answer.confidence < ambiguousThreshold(limits)) {
+    return { status: "unresolved", reason: "ambiguous_bank", decisions };
+  }
   return resolved(action, answer.choice, decisions);
 }
 

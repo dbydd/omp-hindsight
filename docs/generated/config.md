@@ -27,24 +27,32 @@
 | `toolFilter` | global | json | 可选 | — | — | — |
 | `strip` | global | json | 可选 | — | — | — |
 | `recallBudget` | global | string | 可选 | mid | low \\| mid \\| high | — |
-| `recallContextTurns` | global | number | 可选 | 2 | — | — |
-| `recallContextRoles` | global | string[] | 可选 | `user`<br>`assistant`<br>`tool` | — | — |
+| `recallTriggers` | global | string[] | 可选 | `prompt`<br>`turn-end` | prompt \\| turn-end \\| interval；自动召回的触发点集合，空数组等价 explicit-only | — |
+| `recallInSubagents` | global | boolean | 可选 | true | 子代理是否可自动召回：召回是只读的，写操作仍由 INV-6 拦截 | — |
+| `recallContextTurns` | global | number | 可选 | 2 | 取样最近几轮对话作为任务上下文；每轮每种已配置角色各取最新一条 | — |
+| `recallContextRoles` | global | string[] | 可选 | `user`<br>`assistant`<br>`tool` | 任务上下文取样哪些角色：user \\| assistant \\| tool \\| toolResult | — |
 | `recallContextStrategy` | global | string | 可选 | adaptive | adaptive \\| user_only | — |
 | `recallDebounceTurns` | global | number | 可选 | 3 | 连续无焦点位移跳过刷库的轮数，0为不防抖 | — |
 | `recallMaxQueryChars` | global | number | 可选 | 800 | — | — |
+| `recallIntentMaxChars` | global | number | 可选 | 240 | 意图句进查询前的截断长度 | — |
+| `recallSignatureMaxChars` | global | number | 可选 | 200 | 报错指纹进查询前的截断长度 | — |
+| `recallTurnSampleChars` | global | number | 可选 | 4000 | 每轮消息取样尾段字符数 | — |
 | `recallTopK` | global | number | 可选 | 8 | 每轮最多召回条数 | — |
+| `recallRerankCandidateLimit` | global | number | 可选 | 12 | 送进 judge 重排的候选上限；判定答案空间随候选数线性变大 | — |
+| `recallAntiPatternLimit` | global | number | 可选 | 3 | 反向踩坑通道最多注入条数 | — |
+| `recallPreviewChars` | global | number | 可选 | 160 | 候选与命中事实的摘要长度 | — |
 | `recallTimeoutMs` | global | number | 可选 | 10000 | — | — |
 | `recallMode` | global | string | 可选 | every-turn | every-turn \\| every-n-turns \\| explicit-only | — |
 | `recallEveryNTurns` | global | number | 可选 | 5 | recallMode=every-n-turns 时生效 | — |
 | `recallMinIntervalMs` | global | number | 可选 | 0 | 两次 recall 的最小间隔毫秒 | — |
-| `injectTimeoutMs` | global | number | 可选 | 7000 | — | — |
+| `injectTimeoutMs` | global | number | 可选 | 7000 | context 注入路径的总超时，超时本轮放弃注入 | — |
 | `autoRecallTypes` | global | string[] | 可选 | `observation` | — | — |
 | `recallPreferObservations` | global | boolean | 可选 | true | — | — |
 | `recallQueryPreamble` | global | string | 可选 | omp coding task memory lookup. | — | — |
 | `recallAntiPatternGuard` | global | boolean | 可选 | true | true 时启用反向踩坑熔断通道 | — |
-| `recallInjectPosition` | global | string | 可选 | append | append \\| prepend | — |
-| `pageRefreshEveryTurns` | global | number | 可选 | 20 | — | — |
-| `persistDisplay` | global | boolean | 可选 | false | — | — |
+| `recallInjectPosition` | global | string | 可选 | append | append \\| prepend；注入消息在待发送序列里的位置 | — |
+| `persistDisplay` | global | boolean | 可选 | false | prompt 触发的召回是否作为持久消息留在会话里；false 则只进模型上下文 | — |
+| `judgeAmbiguousConfidence` | global | number | 可选 | 0.35 | 判定答案低于此置信度视为歧义，按 FAILURE_MODES 降级而不是硬猜 | — |
 | `retryQueueMaxAttempts` | global | number | 可选 | 5 | 离线重试上限，超限移入 failed | — |
 | `decomposerRole` | global | string | 可选 | smol | 用于入口长意图解构与切分的 omp 模型角色 | — |
 | `defaultRole` | global | string | 可选 | — | — | — |

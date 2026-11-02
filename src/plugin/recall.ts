@@ -1,17 +1,18 @@
 /**
- * L2 自适应 recall：从本轮提示与最近一轮工具产出里拼出查询，并发查遍启用的库，
- * 多库候选交给 judge 重排，最后渲染成 `hindsight.recall` 自定义消息。
+ * L2 自适应 recall：从本轮提示、最近一轮工具产出与最近几轮的任务上下文取样里拼出查询，
+ * 并发查遍启用的库，候选交给 judge 重排，最后渲染成 `hindsight.recall` 自定义消息。
  *
  * 这是自动路径（INV-7）：任何失败都只能是"这次不注入"，异常绝不抛给 agent。
- * 判定与召回的输入都在这里收口——判定模型只看到查询与候选摘要，看不到正文（INV-12）。
+ * 判定与召回的输入都在这里收口——判定模型只看到查询、任务上下文摘要与候选摘要，
+ * 看不到文档正文（INV-12）。所有可调参数都从 `runtime.config` 取，这里不埋默认值。
  */
 
 import type { CustomMessagePayload } from "@oh-my-pi/pi-coding-agent";
 import { RECALL_FENCE } from "../../ssot/spec.ts";
 import type { RecallOptions } from "../core/client.ts";
-import { MAX_AMBIGUOUS_CONFIDENCE, type ChoiceQuestion, type JudgePort } from "../core/judge.ts";
+import type { ChoiceQuestion, JudgePort } from "../core/judge.ts";
 import { buildPath } from "../core/paths.ts";
-import type { BankConfig, InternalPath, TagsMatch } from "../core/types.ts";
+import type { BankConfig, HindsightConfig, InternalPath, TagsMatch } from "../core/types.ts";
 import type { HindsightPluginRuntime } from "./runtime.ts";
 
 /** 消息渲染器按这个 customType 注册；注入与展示共用同一个标识。 */
@@ -23,13 +24,6 @@ const ANTI_PATTERN_TAG = "knowledge:anti_pattern";
 /** `details.fence` 只要围栏名，不带尖括号。 */
 const FENCE_NAME = RECALL_FENCE.open.replace(/[<>]/g, "");
 
-const INTENT_MAX_CHARS = 240;
-const SIGNATURE_MAX_CHARS = 200;
-/** 送进重排的候选上限：判定模型的答案空间随候选数线性变大，不能放任增长。 */
-const RERANK_CANDIDATE_LIMIT = 12;
-const ANTI_PATTERN_LIMIT = 3;
-const PREVIEW_CHARS = 160;
-
 const FACT_TYPES = ["world", "experience", "observation"] as const;
 type FactType = (typeof FACT_TYPES)[number];
 
@@ -40,10 +34,24 @@ type RecallBudget = (typeof BUDGETS)[number];
 // 查询构造
 // ─────────────────────────────────────────────────────────────
 
+/** 一轮对话的取样：角色由调用方按 `recallContextRoles` 过滤，文本已按 `recallTurnSampleChars` 裁过。 */
+export interface RecallTurnSample {
+  readonly role: string;
+  readonly text: string;
+}
+
+export interface BuildQueryInput {
+  readonly lastTurn?: LastTurn;
+  /** 已由调用方按 recallContextTurns / recallContextRoles 取样并裁剪。 */
+  readonly taskContext?: readonly RecallTurnSample[];
+}
+
 export interface AdaptiveRecallQuery {
   readonly query: string;
   /** 最近的产出里带了报错指纹：防抖必须放行，查询也按排障场景构造。 */
   readonly isError: boolean;
+  /** 拼好的任务上下文文本，进 candidate_rerank 的 focus；没有就是 null。 */
+  readonly taskContext: string | null;
 }
 
 /**
@@ -69,34 +77,61 @@ export interface LastTurn {
 /**
  * 报错指纹优先取工具产出（那是刚跑完的东西），其次才是提示原文里粘的堆栈。
  * 意图句取提示的第一句：后续句子通常是补充细节，进查询反而稀释关键词。
+ * 任务上下文不拼进 query：它是给判定看"现在在干什么"的，混进检索词只会拉低召回。
  */
-export function buildAdaptiveRecallQuery(prompt: string, lastTurn: LastTurn = {}): AdaptiveRecallQuery {
-  const signature = errorSignature(lastTurn.toolResult) ?? errorSignature(prompt) ?? errorSignature(lastTurn.assistant);
-  const intent = intentSentence(prompt) ?? intentSentence(lastTurn.assistant) ?? "";
+export function buildAdaptiveRecallQuery(
+  prompt: string,
+  config: HindsightConfig,
+  input?: BuildQueryInput,
+): AdaptiveRecallQuery {
+  const lastTurn = input?.lastTurn;
+  const signature =
+    errorSignature(lastTurn?.toolResult, config) ??
+    errorSignature(prompt, config) ??
+    errorSignature(lastTurn?.assistant, config);
+  const intent = intentSentence(prompt, config) ?? intentSentence(lastTurn?.assistant, config) ?? "";
   const query = [intent, signature].filter((part): part is string => part !== null && part.length > 0).join(" ");
-  return { query, isError: signature !== null };
+  return { query, isError: signature !== null, taskContext: taskContextText(input?.taskContext) };
 }
 
-function intentSentence(text: string | undefined): string | null {
+function intentSentence(text: string | undefined, config: HindsightConfig): string | null {
   if (text === undefined) return null;
   const flattened = text.replace(/\s+/g, " ").trim();
   if (flattened.length === 0) return null;
+  const limit = Math.max(1, config.recallIntentMaxChars);
   // 只按中英文的句末标点切断；ASCII 句点留给路径、版本号与小数。
   const stop = flattened.search(/[。！？!?；;]/);
   const sentence = stop > 0 ? flattened.slice(0, stop) : flattened;
-  return sentence.length > INTENT_MAX_CHARS ? `${sentence.slice(0, INTENT_MAX_CHARS)}…` : sentence;
+  return sentence.length > limit ? `${sentence.slice(0, limit)}…` : sentence;
 }
 
-function errorSignature(text: string | undefined): string | null {
+function errorSignature(text: string | undefined, config: HindsightConfig): string | null {
   if (text === undefined || text.length === 0) return null;
+  const limit = Math.max(1, config.recallSignatureMaxChars);
   for (const pattern of ERROR_PATTERNS) {
     const matched = pattern.exec(text);
     if (matched === null) continue;
     const line = matched[0].replace(/\s+/g, " ").trim();
     if (line.length === 0) continue;
-    return line.length > SIGNATURE_MAX_CHARS ? line.slice(0, SIGNATURE_MAX_CHARS) : line;
+    return line.length > limit ? line.slice(0, limit) : line;
   }
   return null;
+}
+
+/**
+ * 取样拼成一段带角色前缀的文本：判定要能分清哪句是用户要的、哪句是助手已经做过的，
+ * 否则"用户在问 X、助手在做 Y"这种漂移它看不出来。
+ * 取样范围与长度由调用方按 `recallContextTurns` / `recallContextRoles` / `recallTurnSampleChars` 决定。
+ */
+function taskContextText(samples: readonly RecallTurnSample[] | undefined): string | null {
+  if (samples === undefined) return null;
+  const lines: string[] = [];
+  for (const sample of samples) {
+    const text = sample.text.replace(/\s+/g, " ").trim();
+    if (text.length === 0) continue;
+    lines.push(`${sample.role}: ${text}`);
+  }
+  return lines.length === 0 ? null : lines.join("\n");
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -157,6 +192,8 @@ export interface RecallMessageDetails {
   readonly fence: string;
   /** 这一轮实际发出去的自适应查询，供人核对"为什么召回了这些"。 */
   readonly query: string;
+  /** 进判定 focus 的任务上下文；渲染器与 `hindsight://` 调试据此核对重排看到了什么。 */
+  readonly taskContext?: string | null;
   readonly banks: readonly string[];
   readonly facts: readonly RecallFactDetail[];
 }
@@ -197,6 +234,7 @@ export async function performAdaptiveRecall(
   runtime: HindsightPluginRuntime,
   query: string,
   judgePort: JudgePort,
+  taskContext?: string | null,
 ): Promise<CustomMessagePayload | undefined> {
   try {
     const config = runtime.config;
@@ -205,6 +243,9 @@ export async function performAdaptiveRecall(
 
     const trimmed = query.trim().slice(0, Math.max(1, config.recallMaxQueryChars));
     if (trimmed.length === 0) return undefined;
+
+    const sampled = (taskContext ?? "").trim();
+    const context = sampled.length === 0 ? null : sampled;
 
     const settled = await Promise.allSettled(
       banks.map(async (bank) => ({ bank, hits: await recallBank(runtime, bank, trimmed) })),
@@ -229,16 +270,23 @@ export async function performAdaptiveRecall(
 
     const unique = dedupe(hits);
     const regular = unique.filter((hit) => !hit.antiPattern);
-    const antiPatterns = unique.filter((hit) => hit.antiPattern).slice(0, ANTI_PATTERN_LIMIT);
+    const antiPatterns = unique
+      .filter((hit) => hit.antiPattern)
+      .slice(0, Math.max(0, config.recallAntiPatternLimit));
     const banksWithHits = new Set(regular.map((hit) => hit.bank.id));
+    const topK = Math.max(1, config.recallTopK);
 
-    // 候选只来自一个库就不需要重排：本来就只有一列候选，judge 只会多花一次判定。
+    // 单库不重排的前提是"只有一列候选，按分数取前 K 条就够了"。两种情况会打破它：
+    // 候选来自多个库（各库分数不可比，得统一到同一把尺上），或者单库候选数超过 K
+    // （此时的截断本身就是一次取舍，而取舍正是 judge 的活）。后一种只有在有任务上下文时
+    // 才值得花一次判定：没有上下文，judge 看到的并不比分数排序多。
+    const needsRerank = banksWithHits.size > 1 || (context !== null && regular.length > topK);
     const chosen =
       regular.length === 0
         ? []
-        : banksWithHits.size > 1
-          ? (await rerank(trimmed, regular, judgePort)).slice(0, Math.max(1, config.recallTopK))
-          : byScore(regular).slice(0, Math.max(1, config.recallTopK));
+        : needsRerank
+          ? (await rerank(config, trimmed, regular, judgePort, context)).slice(0, topK)
+          : byScore(regular).slice(0, topK);
 
     const facts: RecallFactDetail[] = [...chosen, ...antiPatterns].map(toDetail);
     if (facts.length === 0) return undefined;
@@ -246,6 +294,7 @@ export async function performAdaptiveRecall(
     const details: RecallMessageDetails = {
       fence: FENCE_NAME,
       query: trimmed,
+      taskContext: context,
       banks: reached,
       facts,
     };
@@ -277,8 +326,13 @@ async function recallBank(runtime: HindsightPluginRuntime, bank: BankConfig, que
         })
       : Promise.resolve([] as BankHit[]),
   ]);
-  const limit = Math.max(1, runtime.config.recallTopK);
-  return [...main.slice(0, limit), ...antiPatterns.slice(0, ANTI_PATTERN_LIMIT)];
+  // 候选池按重排上限取，而不是按 topK：每库先砍到 topK 的话，单库永远凑不出
+  // "多于 topK 的候选"，"单库也可重排"这条分支就成了死代码。最终条数在重排之后收口。
+  const limit = Math.max(1, runtime.config.recallTopK, runtime.config.recallRerankCandidateLimit);
+  return [
+    ...main.slice(0, limit),
+    ...antiPatterns.slice(0, Math.max(0, runtime.config.recallAntiPatternLimit)),
+  ];
 }
 
 async function sendRecall(
@@ -325,38 +379,46 @@ function budgetOf(value: string): RecallBudget | undefined {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 多库重排（judge `candidate_rerank`）
+// 候选重排（judge `candidate_rerank`）
 // ─────────────────────────────────────────────────────────────
 
 /**
  * 一次判定重排全部候选：问题只问"哪一条最贴合当前任务"，其余候选的相关度从
  * `probabilities` 里取，所以答案空间是候选清单本身，不需要逐条发问。
- * 低于歧义阈值的候选丢弃（与 `MAX_AMBIGUOUS_CONFIDENCE` 同一条线）。
+ * `focus.task_context` 是判定的另一半输入：只有一句查询时，长任务里的"当前焦点"
+ * 早就不是提示第一句了。低于 `judgeAmbiguousConfidence` 的候选丢弃。
  */
-async function rerank(query: string, hits: readonly BankHit[], judgePort: JudgePort): Promise<BankHit[]> {
-  const candidates = byScore(hits).slice(0, RERANK_CANDIDATE_LIMIT);
+async function rerank(
+  config: HindsightConfig,
+  query: string,
+  hits: readonly BankHit[],
+  judgePort: JudgePort,
+  taskContext: string | null,
+): Promise<BankHit[]> {
+  const candidates = byScore(hits).slice(0, Math.max(1, config.recallRerankCandidateLimit));
+  const previewChars = Math.max(1, config.recallPreviewChars);
   const options: Record<string, string | null> = {};
   const indexed = new Map<string, BankHit>();
   candidates.forEach((hit, position) => {
     const option = `${hit.bank.id}#${position + 1}`;
-    options[option] = `${hit.bank.id} · ${hit.type ?? "unknown"} · ${preview(hit.text)}`;
+    options[option] = `${hit.bank.id} · ${hit.type ?? "unknown"} · ${preview(hit.text, previewChars)}`;
     indexed.set(option, hit);
   });
 
   const question: ChoiceQuestion = {
     type: "choice",
     instructions:
-      "不同记忆库各自召回了一批候选。判断哪一条最贴合当前任务；概率要覆盖候选清单里的每一项，贴题的给高分，边缘相关的给低分。",
+      "不同记忆库各自召回了一批候选。结合 focus 里的 query 与 task_context（当前任务的最近几轮取样）判断哪一条最贴合当前任务；没有 task_context 时只依据 query。概率要覆盖候选清单里的每一项，贴题的给高分，边缘相关的给低分。",
     criteria: options,
   };
   const answers = await judgePort(
     {
-      focus: { query },
+      focus: taskContext === null ? { query } : { query, task_context: taskContext },
       ground_truth: {
         candidates: candidates.map((hit, position) => ({
           index: position + 1,
           bank: hit.bank.id,
-          summary: preview(hit.text),
+          summary: preview(hit.text, previewChars),
         })),
       },
     },
@@ -375,7 +437,7 @@ async function rerank(query: string, hits: readonly BankHit[], judgePort: JudgeP
       // 被选中的那一项用答案自身的置信度兜底：不是每个后端都会在 probabilities 里回填它。
       confidence: answer.probabilities[option] ?? (option === answer.choice ? answer.confidence : 0),
     }))
-    .filter((entry) => entry.confidence >= MAX_AMBIGUOUS_CONFIDENCE)
+    .filter((entry) => entry.confidence >= config.judgeAmbiguousConfidence)
     .sort((left, right) => right.confidence - left.confidence)
     .map((entry) => entry.hit);
 }
@@ -411,9 +473,9 @@ function toDetail(hit: BankHit): RecallFactDetail {
   };
 }
 
-function preview(text: string): string {
+function preview(text: string, chars: number): string {
   const flattened = text.replace(/\s+/g, " ").trim();
-  return flattened.length > PREVIEW_CHARS ? `${flattened.slice(0, PREVIEW_CHARS)}…` : flattened;
+  return flattened.length > chars ? `${flattened.slice(0, chars)}…` : flattened;
 }
 
 // ─────────────────────────────────────────────────────────────

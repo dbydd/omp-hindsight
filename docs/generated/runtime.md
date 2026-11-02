@@ -64,8 +64,7 @@
 | `mental_model_action` | tier2 | `command` | `confirmed_family:mental_model` | `knowledge_base_options`<br>`memory_query_options` |
 | `operation_action` | tier2 | `command` | `confirmed_family:operation_view` | `content_options`<br>`payload_text` |
 | `target_bank` | tier3 | `command`<br>`action` | `available_banks` | `read_options`<br>`payload_text` |
-| `candidate_rerank` | tier3 | `query` | `candidates:index,bank,summary` | `full_document_text`<br>`unretrieved_banks` |
-| `recall_relevance` | recall | `execution_focus:error_fingerprint,plan_subgoal` | `candidate_convention:summary` | `unrelated_tool_diffs`<br>`full_chat_transcript` |
+| `candidate_rerank` | tier3 | `query`<br>`task_context` | `candidates:index,bank,summary` | `full_document_text`<br>`unretrieved_banks` |
 
 ## 标准化回执规范（RECEIPT_TEMPLATES）
 
