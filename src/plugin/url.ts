@@ -256,7 +256,7 @@ interface GuidanceRoute {
 
 /** SSOT 之外只在适配层存在的引导路由；不进 spec.ts，避免把"没有端点"写成路由。 */
 const GUIDANCE_ROUTES: ReadonlyArray<readonly [RegExp, View]> = [
-  [/^hindsight:\/\/([^/?#]+)\/attachments\/?(?:\?.*)?$/, attachmentsGuidanceView],
+  [/^hindsight:\/\/([^/?#]+)\/attachments\/?(?:\?.*)?$/, attachmentsIndexView],
 ];
 
 function matchGuidanceRoute(virtualPath: string): GuidanceRoute | null {
@@ -593,9 +593,10 @@ async function bankRootView(request: ViewRequest): Promise<InternalResource> {
     "## 子资源",
     "",
     `- 文档：\`${subResource(":bank/documents")}\``,
+    `- 附件（图片与多媒体）：\`hindsight://${bank.id}/attachments\``,
     `- 知识库：\`${subResource(":bank/knowledge-base")}\``,
     `- 心智模型：\`${subResource(":bank/mental-models")}\``,
-    `- 事实（带查询召回）：\`${subResource(":bank/facts")}?q=<关键词>\``,
+    `- 事实检索：\`${subResource(":bank/facts")}/<关键词>\`（或调 hindsight 工具自然语言意图）`,
     `- 观测：\`${subResource(":bank/observations")}\``,
     `- 异步任务：\`${subResource(":bank/operations")}\``,
     `- 统计：\`${subResource(":bank/stats")}\``,
@@ -754,10 +755,24 @@ async function recallListing(
   return resource(request.url, lines.join("\n"));
 }
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 async function factLeaf(request: ViewRequest): Promise<InternalResource> {
   const bank = bankOf(request);
   if (bank === undefined) return unknownBank(request);
   const memoryId = request.params.id ?? "";
+
+  // 非 UUID 参数（如 facts/attention）自动降级为语义检索，避开 read 工具截断 ?q= 的问题
+  if (memoryId.length > 0 && !UUID_PATTERN.test(memoryId)) {
+    return recallListing(
+      request,
+      bank,
+      decodeURIComponent(memoryId),
+      undefined,
+      `按关键词 \`${decodeURIComponent(memoryId)}\` 召回的相关度排序结果。`,
+    );
+  }
+
   const fetched = await leafFetch(request, () => request.runtime.client.getMemory(bank.bankId, memoryId));
   if (isResource(fetched)) return fetched;
   const memory = fetched;
@@ -985,24 +1000,79 @@ async function attachmentLeaf(request: ViewRequest): Promise<InternalResource> {
   );
 }
 
-/** 适配层本地引导路由：针对 :bank/attachments 提示无全局附件端点 */
-async function attachmentsGuidanceView(request: ViewRequest): Promise<InternalResource> {
+/**
+ * 附件索引挂件：当 Agent 读取 `hindsight://<bank>/attachments/` 时，
+ * 聚合库内文档的附件清单，输出可直接点选查看的附件门牌列表，而不是输出限制性引导。
+ */
+async function attachmentsIndexView(request: ViewRequest): Promise<InternalResource> {
   const bank = bankOf(request);
   if (bank === undefined) return unknownBank(request);
+
+  const docLimit = 50;
+  const fetchedDocs = await leafFetch(request, () =>
+    request.runtime.client.listDocuments(bank.bankId, { limit: docLimit })
+  );
+  if (isResource(fetchedDocs)) return fetchedDocs;
+
+  const lines: string[] = [
+    `# Attachments: ${bank.id}`,
+    "",
+    `- Bank: \`${bank.id}\``,
+    `- 路径：\`${request.path}\``,
+    "",
+  ];
+
+  interface FoundAttachment {
+    readonly id: string;
+    readonly filename?: string | null;
+    readonly mediaType: string;
+    readonly byteSize: number;
+    readonly documentId: string;
+  }
+
+  const attachments: FoundAttachment[] = [];
+
+  // 遍历文档收集附件信息
+  for (const docSummary of fetchedDocs.items) {
+    try {
+      const docDetail = await request.runtime.client.getDocument(bank.bankId, docSummary.id);
+      if (docDetail && Array.isArray(docDetail.attachments)) {
+        for (const att of docDetail.attachments) {
+          attachments.push({
+            id: att.id,
+            filename: att.filename,
+            mediaType: att.media_type || "image/png",
+            byteSize: att.byte_size || 0,
+            documentId: docSummary.id,
+          });
+        }
+      }
+    } catch {
+      // 单个文档读取失败不阻塞整体列表
+    }
+  }
+
+  if (attachments.length === 0) {
+    lines.push("_当前库内文档中未发现图片或多媒体附件。_");
+  } else {
+    lines.push(`共发现 ${attachments.length} 个附件（扫描最近 ${fetchedDocs.items.length} 篇文档）：`, "");
+    for (const att of attachments) {
+      const ext = att.mediaType.includes("jpeg") || att.mediaType.includes("jpg") ? ".jpg" : ".png";
+      const leafPath = buildPath(":bank/attachments/:id", { bank: bank.id, id: `${att.id}${ext}` });
+      const docPath = buildPath(":bank/documents/:doc", { bank: bank.id, doc: att.documentId });
+      const nameLabel = att.filename ? ` (${att.filename})` : "";
+      const kbSize = (att.byteSize / 1024).toFixed(1);
+      lines.push(
+        `- \`${leafPath}\`${nameLabel}`,
+        `  - 所属文档：[\`${att.documentId}\`](${docPath})`,
+        `  - 属性：${att.mediaType} · ${kbSize} KB`,
+      );
+    }
+  }
+
   return resource(
     request.url,
-    [
-      `# 附件指引：${bank.id}`,
-      "",
-      `- 目标：\`${request.path}\``,
-      `- 说明：Hindsight 服务端目前**不提供**跨 bank 的附件列表端点（GET /banks/:bank/attachments 不存在）。`,
-      "",
-      `## 如何找到并使用附件`,
-      "",
-      `1. **通过文档查看**：附件作为 Markdown 文档的多媒体附庸存在。读 \`hindsight://${bank.id}/documents/<docId>\`，正文里的 \`⟦hs-att:<id>⟧\` 或图片引用会指向具体的附件门牌 \`hindsight://${bank.id}/attachments/<id>.png\`。`,
-      `2. **图像未入库处理**：入库 Markdown 论文或笔记时，确保正文内有合法的 Markdown 图片语法或通过多媒体通道入库。若此前入库时附件数为 0，需重新 retain 包含引用的文本或文件。`,
-      `3. **区分状态**：若查询某图片内容得到空回复，请先确认文档中是否存在该附件门牌，避免在未入库的图像上反复重试。`,
-    ].join("\n"),
+    lines.join("\n"),
   );
 }
 

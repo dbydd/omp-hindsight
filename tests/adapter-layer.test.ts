@@ -304,6 +304,23 @@ describe("plugin/url: internal URL 协议注册与解析", () => {
     expect(missingLoc).toBeNull();
     const missingRes = await HINDSIGHT_PROTOCOL_HANDLER.resolve(parseInternalUrl("hindsight://vault/attachments/missing-att.png"), mainCtx);
     expect(missingRes.content).toContain("图像未入库");
+
+    // 5. 访问 /attachments 列表：作为索引挂件返回附件清单，而不是返回限制性说教
+    const clientOverride = runtime.client as unknown as Record<string, unknown>;
+    clientOverride.listDocuments = async () => ({
+      items: [{ id: "doc-1" }],
+      total: 1,
+      limit: 50,
+      offset: 0,
+    });
+    clientOverride.getDocument = async () => ({
+      id: "doc-1",
+      attachments: [{ id: "existing-att", filename: "fig1.png", media_type: "image/png", byte_size: 2048 }],
+    });
+    const indexRes = await HINDSIGHT_PROTOCOL_HANDLER.resolve(parseInternalUrl("hindsight://vault/attachments"), mainCtx);
+    expect(indexRes.content).toContain("# Attachments: vault");
+    expect(indexRes.content).toContain("`hindsight://vault/attachments/existing-att.png` (fig1.png)");
+    expect(indexRes.content).toContain("所属文档：[`doc-1`]");
   });
 });
 
