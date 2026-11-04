@@ -35,6 +35,7 @@ import {
   renderQueue,
   renderQueueEntry,
 } from "../src/core/render.ts";
+import { assembleSlots } from "../src/core/slots.ts";
 import type {
   ChunkView,
   ConfigProblem,
@@ -486,6 +487,51 @@ describe("config: 密钥", () => {
     expect(readApiKey(config, { [envKey]: secret })).toBe(secret);
     expect(JSON.stringify(config)).not.toContain(secret);
     expect(JSON.stringify(config)).not.toContain(secret.slice(0, 8));
+  });
+
+  test("assembleSlots: retain 动作能从 intent 和 frontmatter 自动提取 tags 并与 constantTags 合并", async () => {
+    const dummyBank: any = {
+      id: "vault",
+      bankId: "test-vault",
+      access: "read-write" as const,
+      retain: { mode: "manual" as const, scopes: "per_tag" as const, constantTags: ["harness:omp"] },
+    };
+
+    // 1. 从 intent 中的 kind:idea 提取
+    const step1 = {
+      command: "把这个结论保存到库中，打上 kind:idea 标签",
+      target: null,
+      file: null,
+      payload: "这是一张关于 DCSA Top-K 的判断卡内容",
+    };
+    const res1 = await assembleSlots("retain", step1, undefined, dummyBank, undefined, async (s: any) => ({
+      status: "ok",
+      content: s.payload ?? "",
+      payloadKind: "inline",
+    }));
+    expect(res1.status).toBe("ready");
+    if (res1.status === "ready" && res1.params !== null && "tags" in res1.params) {
+      expect((res1.params as any).tags).toContain("harness:omp");
+      expect((res1.params as any).tags).toContain("kind:idea");
+    }
+
+    // 2. 从 markdown frontmatter 中的 type: idea 提取
+    const step2 = {
+      command: "写入当前文件",
+      target: null,
+      file: "ideas/my-card.md",
+      payload: "---\ntype: idea\nstatus: active\n---\n# 假设正文",
+    };
+    const res2 = await assembleSlots("retain", step2, undefined, dummyBank, undefined, async (s: any) => ({
+      status: "ok",
+      content: s.payload ?? "",
+      payloadKind: "inline",
+    }));
+    expect(res2.status).toBe("ready");
+    if (res2.status === "ready" && res2.params !== null && "tags" in res2.params) {
+      expect((res2.params as any).tags).toContain("harness:omp");
+      expect((res2.params as any).tags).toContain("kind:idea");
+    }
   });
 });
 

@@ -303,6 +303,54 @@ function incomplete(missing: readonly string[], reason: string): SlotAssembly {
 // 各动作
 // ─────────────────────────────────────────────────────────────
 
+/** 从指令原文中提取显式的 kind:* 或 project:* 标签，让调用方在 intent 里直接表达分类。 */
+const EXPLICIT_TAG_PATTERN = /\b(kind|project|status|source|topic):([a-zA-Z0-9_\-]+)/g;
+
+function extractTagsFromIntent(command: string, existing: readonly string[]): string[] {
+  const tags = new Set(existing);
+  for (const match of command.matchAll(EXPLICIT_TAG_PATTERN)) {
+    if (match[1] !== undefined && match[2] !== undefined) {
+      tags.add(`${match[1]}:${match[2]}`);
+    }
+  }
+  return [...tags];
+}
+
+/** 从 markdown frontmatter 中提取 type/kind/tags 字段，扩展 retain tags。 */
+function extractTagsFromFrontmatter(payload: string, existing: readonly string[]): string[] {
+  const tags = new Set(existing);
+  const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(payload);
+  if (match === null || match[1] === undefined) return [...tags];
+  const frontmatter = match[1];
+
+  const typeMatch = /^(?:type|kind):\s*(\S+)\s*$/m.exec(frontmatter);
+  const rawType = typeMatch?.[1];
+  if (rawType !== undefined) {
+    tags.add(`kind:${rawType}`);
+  }
+
+  const tagsInlineMatch = /^tags:\s*\[([^\]]*)\]\s*$/m.exec(frontmatter);
+  const rawTags = tagsInlineMatch?.[1];
+  if (rawTags !== undefined) {
+    for (const raw of rawTags.split(",")) {
+      const tag = raw.trim().replace(/^["']|["']$/g, "");
+      if (tag.length > 0) tags.add(tag);
+    }
+  }
+
+  const tagsBlock = /^tags:\s*$/m.exec(frontmatter);
+  if (tagsBlock !== null) {
+    const after = frontmatter.slice((tagsBlock.index ?? 0) + tagsBlock[0].length);
+    for (const line of after.split(/\r?\n/)) {
+      const item = /^[\s-]+([^\s#].*?)\s*$/.exec(line);
+      if (item === null || item[1] === undefined) break;
+      tags.add(item[1].trim().replace(/^["']|["']$/g, ""));
+    }
+  }
+
+  return [...tags];
+}
+
 async function retainSlots(
   step: DecomposedStep,
   target: TargetView | null,
@@ -323,13 +371,20 @@ async function retainSlots(
     );
   }
 
+  // 标签聚合：constantTags 为底座，frontmatter 与指令里显式写出的 kind:* / project:* 逐层并入
+  let tags = [...bank.retain.constantTags];
+  tags = extractTagsFromIntent(step.command, tags);
+  if (typeof content.content === "string") {
+    tags = extractTagsFromFrontmatter(content.content, tags);
+  }
+
   return ready({
     content: content.content,
     payloadKind: content.payloadKind,
     // 指令原文写进 context 会被服务端抽成「用户要求保留…」这类元事实，污染领域知识。
     context: null,
     documentId: target?.params.doc ?? null,
-    tags: [...bank.retain.constantTags],
+    tags,
     observationScopes: bank.retain.scopes,
   });
 }

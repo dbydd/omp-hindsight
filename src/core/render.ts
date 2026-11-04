@@ -315,11 +315,12 @@ function knowledgePageBody(page: KnowledgePageResponse, pendingOperationId: stri
 export function describeMentalModelState(
   model: MentalModelResponse,
   pendingOperationId: string | null = null,
+  isListView: boolean = false,
 ): string {
-  const hasContent = model.content !== null && model.content !== undefined && model.content.trim().length > 0;
+  const hasContent = typeof model.content === "string" && model.content.trim().length > 0;
+  const refreshedAt = model.last_refreshed_at ?? "未知时间";
 
   if (hasContent) {
-    const refreshedAt = model.last_refreshed_at ?? "未知时间";
     const status = `内容已生成（最近刷新 ${refreshedAt}）`;
     if (model.is_stale === true) {
       return `${status} — 库内有新记忆等待下次刷新整合，当前呈现已归纳版本，非刷新失败。`;
@@ -340,6 +341,15 @@ export function describeMentalModelState(
   }
 
   if (model.last_refreshed_at !== null && model.last_refreshed_at !== undefined) {
+    // 服务端 listMentalModels 默认不返回 content 字符串（为 null）以节约传输带宽；
+    // 在列表视图中，只要刷新成功且无失败记录，应认定模型状态新鲜/就绪，避免将列表视图误判为“未提取到有效内容”。
+    if (isListView || model.content === null) {
+      const status = `已完成构建（最近刷新 ${refreshedAt}）`;
+      if (model.is_stale === true) {
+        return `${status} — 库内有新记忆等待下次刷新整合。`;
+      }
+      return `${status} — 模型状态新鲜。`;
+    }
     return `已完成刷新（${model.last_refreshed_at}），但在当前取材范围与过滤条件下未提取到有效内容。`;
   }
 

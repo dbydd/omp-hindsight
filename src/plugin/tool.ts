@@ -59,6 +59,39 @@ function canRetainAnywhere(config: HindsightConfig): boolean {
 let toolHost: ExtensionAPI | undefined;
 let activeToolDescription: string | undefined;
 
+const USAGE_INQUIRY_PATTERN = /(?:怎么用|调用格式|如何使用|使用方法|使用说明|怎样调用|调用规范|how to use|usage|calling format|how do i use)/i;
+
+function renderUsageGuide(): string {
+  return [
+    "# Hindsight 工具使用与调用指引",
+    "",
+    "Hindsight 是持久记忆与知识库工具，遵循 **单意图驱动** 架构。四输入参数：",
+    "",
+    "- `intent`（必填）：一句话简要说明操作意图（如「检索 SDANet 的消融实验结果」或「刷新 vault 的知识页」）。",
+    "- `content`（可选）：大段文本正文（仅用于显式写入/保存）。",
+    "- `file`（可选）：本地文件相对路径指针（直接由插件读取入库，如 `test/raw/sdanet.md`）。",
+    "- `target`（可选）：明确目标 Bank 或门牌（如 `hindsight://vault`）。",
+    "",
+    "## 常见意图样例",
+    "",
+    "1. **学术问答与事实检索**：",
+    "   `hindsight(intent=\"检索 SDANet 在 Pavia 数据集上的 PSNR 读数\", target=\"hindsight://vault\")`",
+    "2. **文献/笔记/判断卡入库**：",
+    "   `hindsight(intent=\"将这篇论文写入 vault\", file=\"test/raw/sdanet.md\", target=\"hindsight://vault\")`",
+    "3. **创建或刷新知识页**：",
+    "   `hindsight(intent=\"刷新 vault 的知识页 kp-1f593980...\", target=\"hindsight://vault\")`",
+    "4. **创建或刷新心智模型**：",
+    "   `hindsight(intent=\"刷新 vault 的心智模型 mm-fcbedc90...\", target=\"hindsight://vault\")`",
+    "",
+    "## 静态信息与资源门牌（直读，无需调工具）",
+    "",
+    "- 插件配置：`read hindsight://plugin/config`",
+    "- 库与资源列表：`read hindsight://` 或 `read hindsight://vault`",
+    "- 全局附件列表：`read hindsight://vault/attachments`",
+    "- 事实检索快捷通道：`read hindsight://vault/facts/<关键词>`",
+  ].join("\n");
+}
+
 function registerTool(pi: ExtensionAPI, description: string): void {
   toolHost = pi;
   activeToolDescription = description;
@@ -79,6 +112,12 @@ function registerTool(pi: ExtensionAPI, description: string): void {
       if (!parsed.success) return reply(`Invalid arguments: ${parsed.error.message}`, null);
 
       const input: HindsightToolInput = parsed.data;
+
+      // 用法问句意图拦截：当用户/Agent 询问工具调用格式或用法时，给出确定性指引，避免误打入向量库
+      if (input.content === undefined && input.file === undefined && USAGE_INQUIRY_PATTERN.test(input.intent)) {
+        return reply(renderUsageGuide(), null);
+      }
+
       const runtime = getRuntime();
       if (runtime === undefined) {
         return reply(describeDiscovery(await loadConfig(ctx.cwd, ctx.agent.name), ctx.cwd), null);

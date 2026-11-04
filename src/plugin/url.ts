@@ -897,7 +897,7 @@ function renderModelEntry(
 ): void {
   const path = buildPath(":bank/mental-models/:id", { bank: bankId, id: model.id });
   const stale = model.is_stale === true ? "（待刷新）" : "";
-  const state = describeMentalModelState(model, pendingOperationId);
+  const state = describeMentalModelState(model, pendingOperationId, true);
   lines.push(`- \`${model.id}\` ${model.name}${stale}`, `  - 门牌：\`${path}\``, `  - 状态：${state}`);
   if (model.source_query !== null && model.source_query !== undefined) {
     lines.push(`  - 取材问题：${preview(model.source_query, 160)}`);
